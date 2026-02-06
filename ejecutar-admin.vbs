@@ -1,0 +1,1 @@
+CreateObject("Shell.Application").ShellExecute "powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File """ & CreateObject("WScript.Shell").CurrentDirectory & "\configurar-tarea.ps1""", "", "runas", 1

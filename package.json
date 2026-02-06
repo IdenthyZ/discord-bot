@@ -1,0 +1,31 @@
+{
+  "name": "discord-voice-stay",
+  "version": "1.0.0",
+  "description": "Discord bot que se une a una llamada y se mantiene conectado",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop discord-bot",
+    "pm2:restart": "pm2 restart discord-bot",
+    "pm2:logs": "pm2 logs discord-bot",
+    "pm2:status": "pm2 status"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.18.0",
+    "axios": "^1.13.4",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "ffmpeg-static": "^5.2.0"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "voice",
+    "music"
+  ],
+  "author": "",
+  "license": "MIT"
+}

@@ -1,0 +1,37 @@
+# Dependencias
+node_modules/
+package-lock.json
+
+# Variables de entorno
+.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# PM2
+.pm2/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archivos temporales
+*.tmp
+*.temp
+
+# Claves SSH
+*.pem
+*.key
+*.ppk
+
+# Archivos HAR (pueden contener información sensible)
+*.har
