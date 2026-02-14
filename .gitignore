@@ -4,6 +4,8 @@ package-lock.json
 
 # Variables de entorno
 .env
+.env.*
+.env.production
 
 # Logs
 logs/

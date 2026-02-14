@@ -12,6 +12,8 @@ import {
   demuxProbe,
 } from '@discordjs/voice';
 import { Readable } from 'node:stream';
+import fs from 'node:fs';
+import path from 'node:path';
 import https from 'https';
 import axios from 'axios';
 // Configuración de FFmpeg para Windows
@@ -31,11 +33,17 @@ const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID;
 const SORTEOS_CHANNEL_ID = process.env.SORTEOS_CHANNEL_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const TICKET_LOGS_CHANNEL_ID = process.env.TICKET_LOGS_CHANNEL_ID;
+const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
+const INVITES_CHANNEL_ID = process.env.INVITES_CHANNEL_ID || '1472089754332958851';
+const MEMBER_COUNT_CATEGORY_NAME = process.env.MEMBER_COUNT_CATEGORY_NAME || '📈 • Contador';
+const MEMBER_COUNT_CHANNEL_TEMPLATE = '🧑‍🤝‍🧑 Total: {count}';
 
 if (!TOKEN || !GUILD_ID || !VOICE_CHANNEL_ID) {
   console.error('Faltan variables de entorno: DISCORD_TOKEN, GUILD_ID, VOICE_CHANNEL_ID');
   process.exit(1);
 }
+
+console.log('[Config] MOD_LOGS_CHANNEL_ID:', MOD_LOGS_CHANNEL_ID || 'NO CONFIGURADO');
 
 const client = new Client({
   intents: [
@@ -45,6 +53,8 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildInvites,
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
@@ -61,6 +71,102 @@ const GREET_COOLDOWN_MS = 30_000;
 let pausedResource = null;
 let lastTextChannel = null;
 const activeSorteos = new Map(); // Almacena sorteos activos { messageId: { premio, ganadores, participantes, endTime } }
+const invitesCache = new Map();
+const inviteCounts = new Map();
+const memberInviters = new Map();
+
+const invitesDataPath = path.join(process.cwd(), 'data', 'invites.json');
+
+function loadInvitesData() {
+  try {
+    if (!fs.existsSync(invitesDataPath)) return;
+    const raw = fs.readFileSync(invitesDataPath, 'utf-8');
+    const data = JSON.parse(raw);
+
+    const counts = data?.counts || {};
+    const members = data?.members || {};
+
+    for (const [inviterId, count] of Object.entries(counts)) {
+      inviteCounts.set(inviterId, Number(count) || 0);
+    }
+
+    for (const [memberId, inviterId] of Object.entries(members)) {
+      memberInviters.set(memberId, inviterId);
+    }
+  } catch (err) {
+    console.error('[Invites] Error cargando invites.json:', err);
+  }
+}
+
+function saveInvitesData() {
+  try {
+    fs.mkdirSync(path.dirname(invitesDataPath), { recursive: true });
+    const countsObj = Object.fromEntries(inviteCounts.entries());
+    const membersObj = Object.fromEntries(memberInviters.entries());
+    const data = { counts: countsObj, members: membersObj };
+    fs.writeFileSync(invitesDataPath, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[Invites] Error guardando invites.json:', err);
+  }
+}
+
+function formatMemberCountName(count) {
+  return MEMBER_COUNT_CHANNEL_TEMPLATE.replace('{count}', String(count));
+}
+
+async function ensureMemberCountChannel(guild) {
+  const desiredPrefix = MEMBER_COUNT_CHANNEL_TEMPLATE.replace('{count}', '').trim();
+  let category = guild.channels.cache.find(
+    (ch) => ch.type === ChannelType.GuildCategory && ch.name === MEMBER_COUNT_CATEGORY_NAME
+  );
+
+  if (!category) {
+    category = await guild.channels.create({
+      name: MEMBER_COUNT_CATEGORY_NAME,
+      type: ChannelType.GuildCategory,
+    });
+  }
+
+  const existing = guild.channels.cache.find((ch) => {
+    if (ch.type !== ChannelType.GuildVoice) return false;
+    if (ch.parentId !== category.id) return false;
+    return ch.name.startsWith(desiredPrefix);
+  });
+
+  if (existing) return existing;
+
+  const name = formatMemberCountName(guild.memberCount);
+
+  return guild.channels.create({
+    name,
+    type: ChannelType.GuildVoice,
+    parent: category.id,
+    permissionOverwrites: [
+      {
+        id: guild.id,
+        deny: [PermissionsBitField.Flags.Connect],
+      },
+    ],
+  });
+}
+
+async function updateMemberCountChannel(guild) {
+  const channel = await ensureMemberCountChannel(guild);
+  const desiredName = formatMemberCountName(guild.memberCount);
+  if (channel.name !== desiredName) {
+    await channel.setName(desiredName);
+  }
+}
+
+async function refreshInvitesCache() {
+  const guild = await client.guilds.fetch(GUILD_ID);
+  const invites = await guild.invites.fetch();
+  invitesCache.clear();
+  for (const invite of invites.values()) {
+    invitesCache.set(invite.code, invite.uses ?? 0);
+  }
+  return invites;
+}
 
 function parseClearCount(content) {
   const parts = content.trim().split(/\s+/);
@@ -267,6 +373,7 @@ async function joinAndStay() {
 
 client.on('clientReady', async () => {
   console.log(`Conectado como ${client.user.tag}`);
+  loadInvitesData();
   await joinAndStay();
 
   // Auto-reproducir stream de Maxiradio 24/7
@@ -287,6 +394,20 @@ client.on('clientReady', async () => {
       }
     }
   }, 15_000);
+
+  try {
+    await refreshInvitesCache();
+    console.log('[Invites] Cache inicial cargada');
+  } catch (err) {
+    console.error('[Invites] Error cargando cache inicial:', err);
+  }
+
+  try {
+    await updateMemberCountChannel(await client.guilds.fetch(GUILD_ID));
+    console.log('[Members] Canal contador actualizado');
+  } catch (err) {
+    console.error('[Members] Error actualizando canal contador:', err);
+  }
 });
 
 client.on('messageCreate', async (message) => {
@@ -392,7 +513,10 @@ client.on('messageCreate', async (message) => {
 
     try {
       await member.timeout(milliseconds, reason);
-      await message.reply(`✅ ${member.user.tag} ha sido muteado por ${timeStr}.\n**Razón:** ${reason}`);
+      const reply = await message.reply(`✅ ${member.user.tag} ha sido muteado por ${timeStr}.\n**Razón:** ${reason}`);
+      setTimeout(() => {
+        reply.delete().catch(() => {});
+      }, 4000);
       console.log(`[Mute] ${member.user.tag} muteado por ${message.author.tag} por ${timeStr}. Razón: ${reason}`);
     } catch (err) {
       console.error('Error al mutear:', err);
@@ -864,6 +988,94 @@ client.on('messageCreate', async (message) => {
     await message.reply({ embeds: [embed] });
     return;
   }
+
+  // Comando !kick (expulsar usuario) - Solo administradores
+  if (message.content.startsWith('!kick')) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.delete().catch(() => {});
+      const reply = await message.reply('❌ Solo los administradores pueden usar este comando.');
+      setTimeout(() => {
+        reply.delete().catch(() => {});
+      }, 3000);
+      return;
+    }
+
+    const args = message.content.split(/\s+/);
+    const member = message.mentions.members.first();
+    const reason = args.slice(2).join(' ') || 'Sin razón especificada';
+
+    if (!member) {
+      await message.reply('❌ Debes mencionar a un usuario válido.\nUso: `!kick @usuario [razón]`');
+      return;
+    }
+
+    if (member.id === message.author.id) {
+      await message.reply('❌ No puedes expulsarte a ti mismo.');
+      return;
+    }
+
+    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.reply('❌ No puedes expulsar a un administrador.');
+      return;
+    }
+
+    try {
+      await member.kick(reason);
+      const reply = await message.reply(`✅ ${member.user.tag} ha sido expulsado.\n**Razón:** ${reason}`);
+      setTimeout(() => {
+        reply.delete().catch(() => {});
+      }, 4000);
+      console.log(`[Kick] ${member.user.tag} expulsado por ${message.author.tag}. Razón: ${reason}`);
+    } catch (err) {
+      console.error('Error al expulsar:', err);
+      await message.reply('❌ No pude expulsar al usuario. Verifica que el bot tenga permisos.');
+    }
+    return;
+  }
+
+  // Comando !ban (banear usuario) - Solo administradores
+  if (message.content.startsWith('!ban')) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.delete().catch(() => {});
+      const reply = await message.reply('❌ Solo los administradores pueden usar este comando.');
+      setTimeout(() => {
+        reply.delete().catch(() => {});
+      }, 3000);
+      return;
+    }
+
+    const args = message.content.split(/\s+/);
+    const member = message.mentions.members.first();
+    const reason = args.slice(2).join(' ') || 'Sin razón especificada';
+
+    if (!member) {
+      await message.reply('❌ Debes mencionar a un usuario válido.\nUso: `!ban @usuario [razón]`');
+      return;
+    }
+
+    if (member.id === message.author.id) {
+      await message.reply('❌ No puedes banearte a ti mismo.');
+      return;
+    }
+
+    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.reply('❌ No puedes banear a un administrador.');
+      return;
+    }
+
+    try {
+      await member.ban({ reason });
+      const reply = await message.reply(`✅ ${member.user.tag} ha sido baneado.\n**Razón:** ${reason}`);
+      setTimeout(() => {
+        reply.delete().catch(() => {});
+      }, 4000);
+      console.log(`[Ban] ${member.user.tag} baneado por ${message.author.tag}. Razón: ${reason}`);
+    } catch (err) {
+      console.error('Error al banear:', err);
+      await message.reply('❌ No pude banear al usuario. Verifica que el bot tenga permisos.');
+    }
+    return;
+  }
 });
 
 // Listener para los botones de tickets
@@ -1204,93 +1416,63 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
     return;
   }
-
-  // Detectar si un usuario (no bot) se unió
-  if (!newState?.member) {
-    console.log('[User] Sin miembro');
-    return;
-  }
-  if (newState.member.user?.bot) {
-    console.log('[User] Es un bot, ignorando');
-    return;
-  }
-  if (newState.channelId !== VOICE_CHANNEL_ID) {
-    console.log(`[User] En otro canal: ${newState.channelId}`);
-    return;
-  }
-  if (oldState.channelId === VOICE_CHANNEL_ID) {
-    console.log('[User] Ya estaba en el canal');
-    return;
-  }
-
-  console.log(`[Greet] Verificando cooldown para ${newState.id}`);
-  const now = Date.now();
-  const last = lastGreetByUser.get(newState.id) ?? 0;
-  if (now - last < GREET_COOLDOWN_MS) {
-    console.log(`[Greet] Cooldown activo (${now - last}ms)`);
-    return;
-  }
-
-  lastGreetByUser.set(newState.id, now);
-
-  try {
-    const connection = getVoiceConnection(GUILD_ID) ?? (await joinAndStay());
-    connection.subscribe(player);
-
-    console.log(`[Greet] Usuario ${newState.member.user.username} se unió, reproduciendo saludo...`);
-
-    // Esperar 2 segundos antes del saludo
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    // Guardar el estado actual si está reproduciendo
-    const wasPlaying = player.state.status === AudioPlayerStatus.Playing;
-    if (wasPlaying) {
-      player.stop(true);
-      console.log('[Greet] Radio detenida para reproducir saludo');
-    }
-
-    const text = 'Hola, identhy esta afk, o en unos segundos contesta, esta muteado';
-    const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=es&client=gtx&textlen=${text.length}`;
-
-    console.log('[Greet] Obteniendo TTS...');
-
-    const response = await fetch(ttsUrl);
-    console.log(`[Greet] Respuesta TTS: ${response.status}`);
-    if (!response.ok || !response.body) {
-      console.error('Error obteniendo TTS:', response.status);
-      if (wasPlaying) {
-        await startRadio();
-      }
-      return;
-    }
-
-    const stream = Readable.fromWeb(response.body);
-    const resource = createAudioResource(stream);
-
-    console.log('[Greet] Reproduciendo saludo...');
-
-    // Reproducir saludo y esperar a que termine
-    await new Promise((resolve) => {
-      player.once(AudioPlayerStatus.Idle, resolve);
-      player.play(resource);
-    });
-
-    console.log('Saludo finalizado');
-
-    // Reanudar radio si estaba reproduciendo
-    if (wasPlaying) {
-      console.log('Reanudando radio...');
-      await startRadio();
-    }
-
-  } catch (err) {
-    console.error('Error al reproducir saludo TTS:', err);
-  }
 });
 
 // Evento cuando un nuevo miembro se une al servidor
 client.on('guildMemberAdd', async (member) => {
   console.log(`[Nuevo miembro] ${member.user.username} se unió al servidor`);
+
+  try {
+    const guild = member.guild;
+    const newInvites = await guild.invites.fetch();
+    const usedInvite = newInvites.find(
+      (inv) => (inv.uses ?? 0) > (invitesCache.get(inv.code) ?? 0)
+    );
+
+    invitesCache.clear();
+    for (const invite of newInvites.values()) {
+      invitesCache.set(invite.code, invite.uses ?? 0);
+    }
+
+    const invitesChannel = INVITES_CHANNEL_ID
+      ? await guild.channels.fetch(INVITES_CHANNEL_ID)
+      : null;
+
+    if (usedInvite && usedInvite.inviter?.id) {
+      const inviterId = usedInvite.inviter.id;
+      const currentCount = inviteCounts.get(inviterId) || 0;
+      const newCount = currentCount + 1;
+      inviteCounts.set(inviterId, newCount);
+      memberInviters.set(member.id, inviterId);
+      saveInvitesData();
+
+      if (invitesChannel && invitesChannel.isTextBased()) {
+        const embed = new EmbedBuilder()
+          .setTitle('🎉 Nueva invitacion')
+          .setDescription(
+            `${member} fue invitado por ${usedInvite.inviter}.`
+          )
+          .addFields(
+            { name: 'Invitaciones', value: `${newCount}`, inline: true },
+            { name: 'Codigo', value: usedInvite.code, inline: true }
+          )
+          .setColor('#B7FF00')
+          .setTimestamp();
+
+        await invitesChannel.send({ embeds: [embed] });
+      }
+    } else if (invitesChannel && invitesChannel.isTextBased()) {
+      const embed = new EmbedBuilder()
+        .setTitle('🎉 Nueva invitacion')
+        .setDescription(`${member} se unio, pero no se pudo detectar la invitacion.`)
+        .setColor('#B7FF00')
+        .setTimestamp();
+
+      await invitesChannel.send({ embeds: [embed] });
+    }
+  } catch (err) {
+    console.error('[Invites] Error procesando invitacion:', err);
+  }
 
   // Enviar mensaje de bienvenida
   if (WELCOME_CHANNEL_ID) {
@@ -1300,7 +1482,7 @@ client.on('guildMemberAdd', async (member) => {
         const fecha = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
         
         const welcomeEmbed = new EmbedBuilder()
-          .setTitle('Gracias por unirte a nuestra comunidad! 🎉')
+          .setTitle(`${member.user.username} ¡Gracias por unirte a nuestra comunidad! 🎉`)
           .setDescription(
             `Cualquier cosa avisar en | <#${TICKET_CHANNEL_ID}>\n` +
             `Plática con los usuarios | <#${CHAT_CHANNEL_ID}>\n` +
@@ -1331,6 +1513,346 @@ client.on('guildMemberAdd', async (member) => {
     } catch (err) {
       console.error('Error asignando rol de miembro:', err);
     }
+  }
+
+  try {
+    await updateMemberCountChannel(member.guild);
+  } catch (err) {
+    console.error('[Members] Error actualizando canal contador (join):', err);
+  }
+});
+
+// Evento cuando un miembro empieza a boostear el servidor
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (!oldMember.premiumSince && newMember.premiumSince) {
+    if (!WELCOME_CHANNEL_ID) return;
+
+    try {
+      const boostChannel = await newMember.guild.channels.fetch(WELCOME_CHANNEL_ID);
+      if (boostChannel && boostChannel.isTextBased()) {
+        const boostEmbed = new EmbedBuilder()
+          .setTitle('🚀 ¡Nuevo Boost!')
+          .setDescription(
+            `Gracias ${newMember} por impulsar **${newMember.guild.name}**.\n` +
+            '¡Tu apoyo ayuda mucho a la comunidad!'
+          )
+          .setThumbnail(newMember.user.displayAvatarURL({ dynamic: true, size: 128 }))
+          .setColor('#F47FFF')
+          .setTimestamp();
+
+        await boostChannel.send({ embeds: [boostEmbed] });
+        console.log(`[Boost] ${newMember.user.tag} empezó a boostear`);
+      }
+    } catch (err) {
+      console.error('Error enviando mensaje de boost:', err);
+    }
+  }
+});
+
+// Evento cuando un miembro se va (restar invitacion)
+client.on('guildMemberRemove', async (member) => {
+  const inviterId = memberInviters.get(member.id);
+  if (!inviterId) return;
+
+  const currentCount = inviteCounts.get(inviterId) || 0;
+  const newCount = Math.max(0, currentCount - 1);
+  inviteCounts.set(inviterId, newCount);
+  memberInviters.delete(member.id);
+  saveInvitesData();
+
+  try {
+    const invitesChannel = INVITES_CHANNEL_ID
+      ? await member.guild.channels.fetch(INVITES_CHANNEL_ID)
+      : null;
+
+    if (invitesChannel && invitesChannel.isTextBased()) {
+      const embed = new EmbedBuilder()
+        .setTitle('📉 Invitacion restada')
+        .setDescription(
+          `${member.user.tag} se fue. Se desconto una invitacion a <@${inviterId}>.`
+        )
+        .addFields({ name: 'Invitaciones', value: `${newCount}`, inline: true })
+        .setColor('#B7FF00')
+        .setTimestamp();
+
+      await invitesChannel.send({ embeds: [embed] });
+    }
+  } catch (err) {
+    console.error('[Invites] Error enviando log de salida:', err);
+  }
+
+  try {
+    await updateMemberCountChannel(member.guild);
+  } catch (err) {
+    console.error('[Members] Error actualizando canal contador (leave):', err);
+  }
+});
+
+// ====================================
+// SISTEMA DE LOGS DE MODERACIÓN
+// ====================================
+
+// Función para enviar logs al canal de moderación
+async function sendModLog(guild, embed) {
+  if (!MOD_LOGS_CHANNEL_ID) {
+    console.warn('[Mod Logs] MOD_LOGS_CHANNEL_ID no configurado');
+    return;
+  }
+  
+  try {
+    const logChannel = await guild.channels.fetch(MOD_LOGS_CHANNEL_ID);
+    if (!logChannel) {
+      console.error(`[Mod Logs] No se encontró el canal ${MOD_LOGS_CHANNEL_ID}`);
+      return;
+    }
+    if (!logChannel.isTextBased()) {
+      console.error(`[Mod Logs] El canal ${MOD_LOGS_CHANNEL_ID} no es un canal de texto`);
+      return;
+    }
+    await logChannel.send({ embeds: [embed] });
+    console.log('[Mod Logs] Log enviado correctamente');
+  } catch (err) {
+    console.error('[Mod Logs] Error enviando log:', err.message);
+  }
+}
+
+// Log: Usuario baneado
+client.on('guildBanAdd', async (ban) => {
+  console.log(`[Mod Logs] Evento guildBanAdd disparado para ${ban.user.tag}`);
+  try {
+    const auditLogs = await ban.guild.fetchAuditLogs({
+      limit: 1,
+      type: 22, // MEMBER_BAN_ADD
+    });
+    
+    const banLog = auditLogs.entries.first();
+    const executor = banLog?.executor || { tag: 'Desconocido' };
+    const reason = ban.reason || 'No especificada';
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🔨 Usuario Baneado')
+      .setColor('#ff0000')
+      .addFields(
+        { name: '👤 Usuario', value: `${ban.user.tag} (${ban.user.id})`, inline: true },
+        { name: '👮 Moderador', value: executor.tag, inline: true },
+        { name: '📋 Razón', value: reason, inline: false }
+      )
+      .setThumbnail(ban.user.displayAvatarURL({ dynamic: true }))
+      .setTimestamp()
+      .setFooter({ text: 'Sistema de logs de moderación' });
+    
+    await sendModLog(ban.guild, embed);
+    console.log(`[Mod Logs] Usuario baneado: ${ban.user.tag} por ${executor.tag}`);
+  } catch (err) {
+    console.error('[Mod Logs] Error en log de ban:', err);
+  }
+});
+
+// Log: Ban removido
+client.on('guildBanRemove', async (ban) => {
+  try {
+    const auditLogs = await ban.guild.fetchAuditLogs({
+      limit: 1,
+      type: 23, // MEMBER_BAN_REMOVE
+    });
+    
+    const unbanLog = auditLogs.entries.first();
+    const executor = unbanLog?.executor || { tag: 'Desconocido' };
+    
+    const embed = new EmbedBuilder()
+      .setTitle('✅ Ban Removido')
+      .setColor('#00ff00')
+      .addFields(
+        { name: '👤 Usuario', value: `${ban.user.tag} (${ban.user.id})`, inline: true },
+        { name: '👮 Moderador', value: executor.tag, inline: true }
+      )
+      .setThumbnail(ban.user.displayAvatarURL({ dynamic: true }))
+      .setTimestamp()
+      .setFooter({ text: 'Sistema de logs de moderación' });
+    
+    await sendModLog(ban.guild, embed);
+    console.log(`[Mod Logs] Ban removido: ${ban.user.tag} por ${executor.tag}`);
+  } catch (err) {
+    console.error('[Mod Logs] Error en log de unban:', err);
+  }
+});
+
+// Log: Usuario expulsado o abandonó el servidor
+client.on('guildMemberRemove', async (member) => {
+  try {
+    // Esperar un poco para que el audit log se actualice
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    const auditLogs = await member.guild.fetchAuditLogs({
+      limit: 1,
+      type: 20, // MEMBER_KICK
+    });
+    
+    const kickLog = auditLogs.entries.first();
+    
+    // Si fue hace menos de 5 segundos, es un kick
+    if (kickLog && kickLog.target.id === member.id && Date.now() - kickLog.createdTimestamp < 5000) {
+      const executor = kickLog.executor;
+      const reason = kickLog.reason || 'No especificada';
+      
+      const embed = new EmbedBuilder()
+        .setTitle('👢 Usuario Expulsado')
+        .setColor('#ff9900')
+        .addFields(
+          { name: '👤 Usuario', value: `${member.user.tag} (${member.id})`, inline: true },
+          { name: '👮 Moderador', value: executor.tag, inline: true },
+          { name: '📋 Razón', value: reason, inline: false }
+        )
+        .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+        .setTimestamp()
+        .setFooter({ text: 'Sistema de logs de moderación' });
+      
+      await sendModLog(member.guild, embed);
+      console.log(`[Mod Logs] Usuario expulsado: ${member.user.tag} por ${executor.tag}`);
+    }
+  } catch (err) {
+    console.error('[Mod Logs] Error en log de kick:', err);
+  }
+});
+
+// Log: Timeout (aislamiento temporal)
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  try {
+    const oldTimeout = oldMember.communicationDisabledUntil;
+    const newTimeout = newMember.communicationDisabledUntil;
+    
+    // Si se agregó un timeout
+    if (!oldTimeout && newTimeout) {
+      const auditLogs = await newMember.guild.fetchAuditLogs({
+        limit: 1,
+        type: 24, // MEMBER_UPDATE
+      });
+      
+      const timeoutLog = auditLogs.entries.first();
+      const executor = timeoutLog?.executor || { tag: 'Desconocido' };
+      const reason = timeoutLog?.reason || 'No especificada';
+      const duration = Math.round((newTimeout - Date.now()) / 1000 / 60); // minutos
+      
+      const embed = new EmbedBuilder()
+        .setTitle('⏰ Timeout Aplicado')
+        .setColor('#ffcc00')
+        .addFields(
+          { name: '👤 Usuario', value: `${newMember.user.tag} (${newMember.id})`, inline: true },
+          { name: '👮 Moderador', value: executor.tag, inline: true },
+          { name: '⏱️ Duración', value: `${duration} minutos`, inline: true },
+          { name: '📋 Razón', value: reason, inline: false }
+        )
+        .setThumbnail(newMember.user.displayAvatarURL({ dynamic: true }))
+        .setTimestamp()
+        .setFooter({ text: 'Sistema de logs de moderación' });
+      
+      await sendModLog(newMember.guild, embed);
+      console.log(`[Mod Logs] Timeout aplicado: ${newMember.user.tag} por ${executor.tag} (${duration}min)`);
+    }
+    
+    // Si se removió un timeout
+    if (oldTimeout && !newTimeout && oldTimeout > Date.now()) {
+      const auditLogs = await newMember.guild.fetchAuditLogs({
+        limit: 1,
+        type: 24, // MEMBER_UPDATE
+      });
+      
+      const timeoutLog = auditLogs.entries.first();
+      const executor = timeoutLog?.executor || { tag: 'Desconocido' };
+      
+      const embed = new EmbedBuilder()
+        .setTitle('✅ Timeout Removido')
+        .setColor('#00ff00')
+        .addFields(
+          { name: '👤 Usuario', value: `${newMember.user.tag} (${newMember.id})`, inline: true },
+          { name: '👮 Moderador', value: executor.tag, inline: true }
+        )
+        .setThumbnail(newMember.user.displayAvatarURL({ dynamic: true }))
+        .setTimestamp()
+        .setFooter({ text: 'Sistema de logs de moderación' });
+      
+      await sendModLog(newMember.guild, embed);
+      console.log(`[Mod Logs] Timeout removido: ${newMember.user.tag} por ${executor.tag}`);
+    }
+  } catch (err) {
+    console.error('[Mod Logs] Error en log de timeout:', err);
+  }
+});
+
+// Log: Mensaje eliminado
+client.on('messageDelete', async (message) => {
+  try {
+    // Ignorar mensajes de bots o sin contenido
+    if (!message.guild || message.author?.bot) return;
+    
+    const auditLogs = await message.guild.fetchAuditLogs({
+      limit: 1,
+      type: 72, // MESSAGE_DELETE
+    });
+    
+    const deleteLog = auditLogs.entries.first();
+    let executor = { tag: 'Usuario (auto-eliminado)' };
+    
+    // Si fue eliminado por un moderador (hace menos de 3 segundos)
+    if (deleteLog && Date.now() - deleteLog.createdTimestamp < 3000) {
+      executor = deleteLog.executor;
+    }
+    
+    const content = message.content || '[Sin contenido de texto]';
+    const truncatedContent = content.length > 1000 ? content.substring(0, 1000) + '...' : content;
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🗑️ Mensaje Eliminado')
+      .setColor('#ff6600')
+      .addFields(
+        { name: '👤 Autor', value: message.author ? `${message.author.tag} (${message.author.id})` : 'Desconocido', inline: true },
+        { name: '🗑️ Eliminado por', value: executor.tag, inline: true },
+        { name: '📍 Canal', value: `<#${message.channel.id}>`, inline: true },
+        { name: '💬 Contenido', value: truncatedContent, inline: false }
+      )
+      .setTimestamp()
+      .setFooter({ text: `ID del mensaje: ${message.id}` });
+    
+    if (message.author) {
+      embed.setThumbnail(message.author.displayAvatarURL({ dynamic: true }));
+    }
+    
+    await sendModLog(message.guild, embed);
+  } catch (err) {
+    console.error('[Mod Logs] Error en log de mensaje eliminado:', err);
+  }
+});
+
+// Log: Múltiples mensajes eliminados (purge)
+client.on('messageDeleteBulk', async (messages) => {
+  try {
+    const guild = messages.first()?.guild;
+    if (!guild) return;
+    
+    const auditLogs = await guild.fetchAuditLogs({
+      limit: 1,
+      type: 73, // MESSAGE_BULK_DELETE
+    });
+    
+    const bulkDeleteLog = auditLogs.entries.first();
+    const executor = bulkDeleteLog?.executor || { tag: 'Desconocido' };
+    const channel = messages.first()?.channel;
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🧹 Purga de Mensajes')
+      .setColor('#ff0066')
+      .addFields(
+        { name: '📊 Cantidad', value: `${messages.size} mensajes`, inline: true },
+        { name: '👮 Moderador', value: executor.tag, inline: true },
+        { name: '📍 Canal', value: channel ? `<#${channel.id}>` : 'Desconocido', inline: true }
+      )
+      .setTimestamp()
+      .setFooter({ text: 'Sistema de logs de moderación' });
+    
+    await sendModLog(guild, embed);
+    console.log(`[Mod Logs] Purga de mensajes: ${messages.size} mensajes por ${executor.tag}`);
+  } catch (err) {
+    console.error('[Mod Logs] Error en log de purga:', err);
   }
 });
 
