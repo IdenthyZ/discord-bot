@@ -33,8 +33,11 @@ const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID;
 const SORTEOS_CHANNEL_ID = process.env.SORTEOS_CHANNEL_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const TICKET_LOGS_CHANNEL_ID = process.env.TICKET_LOGS_CHANNEL_ID;
+const TICKET_ADMIN_ROLE_ID = process.env.TICKET_ADMIN_ROLE_ID || '1442336261464658096';
 const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
 const INVITES_CHANNEL_ID = process.env.INVITES_CHANNEL_ID || '1472089754332958851';
+const ALLYS_CHANNEL_ID = process.env.ALLYS_CHANNEL_ID || '1472827620209987664';
+const ALLYS_ADMIN_ROLE_ID = process.env.ALLYS_ADMIN_ROLE_ID || '1442336261464658096';
 const MEMBER_COUNT_CATEGORY_NAME = process.env.MEMBER_COUNT_CATEGORY_NAME || '📈 • Contador';
 const MEMBER_COUNT_CHANNEL_TEMPLATE = '🧑‍🤝‍🧑 Total: {count}';
 
@@ -176,6 +179,13 @@ function parseClearCount(content) {
   return count;
 }
 
+function hasTicketClosePermission(member) {
+  if (!member) return false;
+  const isAdministrator = member.permissions?.has(PermissionsBitField.Flags.Administrator);
+  const hasTicketAdminRole = member.roles?.cache?.has(TICKET_ADMIN_ROLE_ID);
+  return Boolean(isAdministrator || hasTicketAdminRole);
+}
+
 function playNext() {
   const next = queue.shift();
   if (!next) return;
@@ -269,6 +279,69 @@ async function saveTicketLog(channel, closedBy) {
   } catch (err) {
     console.error('Error guardando log del ticket:', err);
   }
+}
+
+function hasPermissionOverwritesChanged(oldChannel, newChannel) {
+  const oldOverwrites = oldChannel.permissionOverwrites?.cache;
+  const newOverwrites = newChannel.permissionOverwrites?.cache;
+  if (!oldOverwrites || !newOverwrites) return false;
+  if (oldOverwrites.size !== newOverwrites.size) return true;
+
+  for (const [id, oldOverwrite] of oldOverwrites) {
+    const newOverwrite = newOverwrites.get(id);
+    if (!newOverwrite) return true;
+    if (!oldOverwrite.allow.equals(newOverwrite.allow)) return true;
+    if (!oldOverwrite.deny.equals(newOverwrite.deny)) return true;
+  }
+
+  return false;
+}
+
+async function syncTicketChannelsWithCategory(categoryChannel) {
+  if (!categoryChannel || categoryChannel.type !== ChannelType.GuildCategory) {
+    return { total: 0, synced: 0 };
+  }
+
+  const guild = categoryChannel.guild;
+  const ticketChannels = guild.channels.cache.filter((ch) => {
+    if (ch.type !== ChannelType.GuildText) return false;
+    if (ch.parentId !== categoryChannel.id) return false;
+    return ch.name.toLowerCase().startsWith('ticket-');
+  });
+
+  if (ticketChannels.size === 0) {
+    return { total: 0, synced: 0 };
+  }
+
+  const categoryOverwrites = categoryChannel.permissionOverwrites.cache.map((overwrite) => ({
+    id: overwrite.id,
+    allow: overwrite.allow,
+    deny: overwrite.deny,
+  }));
+  const categoryIds = new Set(categoryOverwrites.map((overwrite) => overwrite.id));
+
+  let synced = 0;
+  for (const ticketChannel of ticketChannels.values()) {
+    try {
+      const ticketSpecificOverwrites = ticketChannel.permissionOverwrites.cache
+        .filter((overwrite) => !categoryIds.has(overwrite.id))
+        .map((overwrite) => ({
+          id: overwrite.id,
+          allow: overwrite.allow,
+          deny: overwrite.deny,
+        }));
+
+      await ticketChannel.permissionOverwrites.set([
+        ...categoryOverwrites,
+        ...ticketSpecificOverwrites,
+      ]);
+      synced += 1;
+    } catch (err) {
+      console.error(`[Tickets] Error resincronizando permisos en ${ticketChannel.name}:`, err);
+    }
+  }
+
+  return { total: ticketChannels.size, synced };
 }
 
 player.on(AudioPlayerStatus.Idle, () => {
@@ -442,6 +515,43 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // Comando !allys
+  if (message.content.startsWith('!allys')) {
+    if (!message.member.roles?.cache?.has(ALLYS_ADMIN_ROLE_ID)) {
+      await message.reply('❌ Solo los administradores autorizados pueden usar este comando.');
+      return;
+    }
+
+    const texto = message.content.slice('!allys'.length).trim();
+
+    if (!texto) {
+      await message.reply('❌ Uso correcto: `!allys <mensaje>`');
+      return;
+    }
+
+    try {
+      const allysChannel = await message.guild.channels.fetch(ALLYS_CHANNEL_ID).catch(() => null);
+
+      if (!allysChannel || !allysChannel.isTextBased()) {
+        await message.reply('❌ No encontré el canal de allys o no es un canal de texto.');
+        return;
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor('#deaeed')
+        .setDescription(texto)
+        .setFooter({ text: `Enviado por ${message.author.tag}` })
+        .setTimestamp();
+
+      await allysChannel.send({ embeds: [embed] });
+      await message.reply('✅ Mensaje enviado al canal de allys.');
+    } catch (err) {
+      console.error('Error en !allys:', err);
+      await message.reply('❌ No pude enviar el mensaje al canal de allys.');
+    }
+    return;
+  }
+
   // Comando !mute
   if (message.content.startsWith('!mute')) {
     // Verificar que el usuario sea administrador
@@ -599,6 +709,41 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // Comando !sync-tickets (resincronizar permisos con la categoría)
+  if (message.content.startsWith('!sync-tickets')) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.delete().catch(() => {});
+      const reply = await message.reply('❌ Solo los administradores pueden usar este comando.');
+      setTimeout(() => {
+        reply.delete().catch(() => {});
+      }, 2000);
+      return;
+    }
+
+    if (!TICKET_CATEGORY_ID) {
+      await message.reply('❌ No hay categoría de tickets configurada (`TICKET_CATEGORY_ID`).');
+      return;
+    }
+
+    try {
+      const category = message.guild.channels.cache.get(TICKET_CATEGORY_ID)
+        || await message.guild.channels.fetch(TICKET_CATEGORY_ID).catch(() => null);
+
+      if (!category || category.type !== ChannelType.GuildCategory) {
+        await message.reply('❌ La categoría de tickets configurada no existe o no es válida.');
+        return;
+      }
+
+      const result = await syncTicketChannelsWithCategory(category);
+      await message.reply(`✅ Resincronización completada: ${result.synced}/${result.total} ticket(s) actualizados.`);
+      console.log(`[Tickets] Resincronización manual ejecutada por ${message.author.tag}: ${result.synced}/${result.total}`);
+    } catch (err) {
+      console.error('[Tickets] Error en !sync-tickets:', err);
+      await message.reply('❌ Error al resincronizar tickets. Revisa la consola para más detalles.');
+    }
+    return;
+  }
+
   // Comando !close (cerrar ticket)
   if (message.content.startsWith('!close')) {
     if (!message.channel.name.startsWith('ticket-')) {
@@ -606,7 +751,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator);
+    const isAdmin = hasTicketClosePermission(message.member);
     const isTicketOwner = message.channel.topic && message.channel.topic.includes(message.author.id);
 
     if (!isAdmin && !isTicketOwner) {
@@ -1094,7 +1239,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       const member = interaction.member;
-      const isAdmin = member.permissions.has(PermissionsBitField.Flags.Administrator);
+      const isAdmin = hasTicketClosePermission(member);
       const isTicketOwner = channel.topic && channel.topic.includes(member.id);
 
       if (!isAdmin && !isTicketOwner) {
@@ -1195,17 +1340,28 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       try {
+        const ticketCategory = TICKET_CATEGORY_ID
+          ? guild.channels.cache.get(TICKET_CATEGORY_ID) || await guild.channels.fetch(TICKET_CATEGORY_ID).catch(() => null)
+          : null;
+
+        const categoryOverwrites = ticketCategory?.permissionOverwrites?.cache
+          ? ticketCategory.permissionOverwrites.cache
+            .filter((overwrite) => overwrite.id !== member.id && overwrite.id !== client.user.id)
+            .map((overwrite) => ({
+              id: overwrite.id,
+              allow: overwrite.allow,
+              deny: overwrite.deny,
+            }))
+          : [];
+
         // Crear canal de ticket
         const ticketChannel = await guild.channels.create({
           name: `ticket-${member.user.username}`,
           type: ChannelType.GuildText,
-          parent: TICKET_CATEGORY_ID || null,
+          parent: ticketCategory?.id || null,
           topic: `Ticket de ${member.user.tag} (${member.id})`,
           permissionOverwrites: [
-            {
-              id: guild.id,
-              deny: [PermissionsBitField.Flags.ViewChannel]
-            },
+            ...categoryOverwrites,
             {
               id: member.id,
               allow: [
@@ -1231,6 +1387,15 @@ client.on('interactionCreate', async (interaction) => {
         );
         if (adminRole) {
           await ticketChannel.permissionOverwrites.create(adminRole, {
+            ViewChannel: true,
+            SendMessages: true,
+            ReadMessageHistory: true
+          });
+        }
+
+        const ticketAdminRole = guild.roles.cache.get(TICKET_ADMIN_ROLE_ID);
+        if (ticketAdminRole) {
+          await ticketChannel.permissionOverwrites.create(ticketAdminRole, {
             ViewChannel: true,
             SendMessages: true,
             ReadMessageHistory: true
@@ -1280,6 +1445,20 @@ client.on('interactionCreate', async (interaction) => {
       }
       return;
     }
+  }
+});
+
+client.on('channelUpdate', async (oldChannel, newChannel) => {
+  try {
+    if (!TICKET_CATEGORY_ID) return;
+    if (newChannel.id !== TICKET_CATEGORY_ID) return;
+    if (newChannel.type !== ChannelType.GuildCategory) return;
+    if (!hasPermissionOverwritesChanged(oldChannel, newChannel)) return;
+
+    const result = await syncTicketChannelsWithCategory(newChannel);
+    console.log(`[Tickets] Permisos resincronizados en tickets abiertos tras cambios en categoría: ${result.synced}/${result.total}`);
+  } catch (err) {
+    console.error('[Tickets] Error en resincronización automática de permisos:', err);
   }
 });
 

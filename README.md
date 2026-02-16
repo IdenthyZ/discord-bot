@@ -31,6 +31,7 @@ npm start
    DISCORD_TOKEN=tu_token_de_discord
    GUILD_ID=id_de_tu_servidor
    VOICE_CHANNEL_ID=id_del_canal_de_voz
+   TICKET_ADMIN_ROLE_ID=id_del_rango_que_puede_cerrar_tickets
    # ... resto de IDs
    ```
 
