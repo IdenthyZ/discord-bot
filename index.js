@@ -2,99 +2,9 @@ const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
 // Canal donde se enviarán los logs de auditoría
 const AUDIT_LOG_CHANNEL_ID = process.env.AUDIT_LOG_CHANNEL_ID || MOD_LOGS_CHANNEL_ID;
 
+
 // Auditoría: creación/eliminación de invitaciones
 client.on('inviteCreate', async (invite) => {
-  if (!AUDIT_LOG_CHANNEL_ID) return;
-  const channel = await invite.guild.channels.fetch(AUDIT_LOG_CHANNEL_ID).catch(() => null);
-  if (!channel) return;
-  const embed = new EmbedBuilder()
-    .setTitle('🔗 Nueva invitación creada')
-    .addFields(
-      { name: 'Código', value: invite.code, inline: true },
-      { name: 'Creador', value: invite.inviter ? `${invite.inviter.tag}` : 'Desconocido', inline: true },
-      { name: 'Canal', value: `<#${invite.channel.id}>`, inline: true }
-    )
-    .setTimestamp();
-  channel.send({ embeds: [embed] });
-});
-
-client.on('inviteDelete', async (invite) => {
-  if (!AUDIT_LOG_CHANNEL_ID) return;
-  const channel = await invite.guild.channels.fetch(AUDIT_LOG_CHANNEL_ID).catch(() => null);
-  if (!channel) return;
-  const embed = new EmbedBuilder()
-    .setTitle('❌ Invitación eliminada')
-    .addFields(
-      { name: 'Código', value: invite.code, inline: true },
-      { name: 'Canal', value: invite.channel ? `<#${invite.channel.id}>` : 'Desconocido', inline: true }
-    )
-    .setTimestamp();
-  channel.send({ embeds: [embed] });
-});
-
-// Auditoría: cambios de roles
-client.on('guildMemberUpdate', async (oldMember, newMember) => {
-  if (!AUDIT_LOG_CHANNEL_ID) return;
-  const channel = await newMember.guild.channels.fetch(AUDIT_LOG_CHANNEL_ID).catch(() => null);
-  if (!channel) return;
-  const oldRoles = oldMember.roles.cache.map(r => r.id);
-  const newRoles = newMember.roles.cache.map(r => r.id);
-  if (oldRoles.length !== newRoles.length || !oldRoles.every(r => newRoles.includes(r))) {
-    // Buscar quién hizo el cambio
-    const auditLogs = await newMember.guild.fetchAuditLogs({ type: 25, limit: 1 }); // MEMBER_ROLE_UPDATE
-    const entry = auditLogs.entries.first();
-    const executor = entry?.executor ? `${entry.executor.tag}` : 'Desconocido';
-    const embed = new EmbedBuilder()
-      .setTitle('🛡️ Cambio de roles')
-      .addFields(
-        { name: 'Usuario', value: `${newMember.user.tag} (${newMember.id})`, inline: true },
-        { name: 'Ejecutor', value: executor, inline: true },
-        { name: 'Roles antes', value: oldMember.roles.cache.map(r => `<@&${r.id}>`).join(', ') || 'Ninguno', inline: false },
-        { name: 'Roles después', value: newMember.roles.cache.map(r => `<@&${r.id}>`).join(', ') || 'Ninguno', inline: false }
-      )
-      .setTimestamp();
-    channel.send({ embeds: [embed] });
-  }
-});
-
-// Auditoría: edición de canales/categorías
-client.on('channelUpdate', async (oldChannel, newChannel) => {
-  if (!AUDIT_LOG_CHANNEL_ID) return;
-  const channel = await newChannel.guild.channels.fetch(AUDIT_LOG_CHANNEL_ID).catch(() => null);
-  if (!channel) return;
-  if (oldChannel.name !== newChannel.name || oldChannel.type !== newChannel.type) {
-    const auditLogs = await newChannel.guild.fetchAuditLogs({ type: 11, limit: 1 }); // CHANNEL_UPDATE
-    const entry = auditLogs.entries.first();
-    const executor = entry?.executor ? `${entry.executor.tag}` : 'Desconocido';
-    const embed = new EmbedBuilder()
-      .setTitle('📝 Canal/categoría editado')
-      .addFields(
-        { name: 'Canal', value: `<#${newChannel.id}> (${newChannel.id})`, inline: true },
-        { name: 'Ejecutor', value: executor, inline: true },
-        { name: 'Nombre antes', value: oldChannel.name, inline: false },
-        { name: 'Nombre después', value: newChannel.name, inline: false }
-      )
-      .setTimestamp();
-    channel.send({ embeds: [embed] });
-  }
-});
-
-// Comando para mostrar configuración de auditoría
-client.on('messageCreate', async (message) => {
-  if (message.content.trim() === '!auditoria-config') {
-    let desc = `Canal de logs de auditoría: <#${AUDIT_LOG_CHANNEL_ID || 'NO CONFIGURADO'}>\n`;
-    desc += 'Eventos auditados:\n- Cambios de roles\n- Creación/eliminación de invitaciones\n- Edición de canales/categorías';
-    const embed = new EmbedBuilder().setTitle('🔍 Configuración de Auditoría').setDescription(desc).setColor('#00bcd4');
-    await message.reply({ embeds: [embed] });
-    return;
-  }
-});
-import 'dotenv/config';
-import { Client, GatewayIntentBits, Partials, PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
-import {
-  joinVoiceChannel,
-  getVoiceConnection,
-  VoiceConnectionStatus,
   entersState,
   createAudioPlayer,
   createAudioResource,
@@ -125,7 +35,7 @@ const SORTEOS_CHANNEL_ID = process.env.SORTEOS_CHANNEL_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const TICKET_LOGS_CHANNEL_ID = process.env.TICKET_LOGS_CHANNEL_ID;
 const TICKET_ADMIN_ROLE_ID = process.env.TICKET_ADMIN_ROLE_ID || '1442336261464658096';
-const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
+
 const INVITES_CHANNEL_ID = process.env.INVITES_CHANNEL_ID || '1472089754332958851';
 const ALLYS_CHANNEL_ID = process.env.ALLYS_CHANNEL_ID || '1472827620209987664';
 const ALLYS_ADMIN_ROLE_ID = process.env.ALLYS_ADMIN_ROLE_ID || '1442336261464658096';
@@ -592,7 +502,7 @@ client.on('messageCreate', async (message) => {
                 .setColor('#7289da')
                 .setTitle(`Avatar de ${user.tag}`)
                 .setImage(user.displayAvatarURL({ size: 512, extension: 'png', dynamic: true }))
-                .setFooter({ text: 'Bot de Discord', iconURL: client.user?.avatarURL() || undefined });
+                .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined });
               await message.reply({ embeds: [avatarEmbed] });
               return;
             }
