@@ -487,17 +487,22 @@ client.on('messageCreate', async (message) => {
     // Comando !help
     if (message.content.trim() === '!help') {
       const helpEmbed = new EmbedBuilder()
-        .setColor('#a3d8f4')
-        .setTitle('Comandos disponibles')
-        .setDescription('Lista de comandos y permisos necesarios:')
+        .setColor('#ff69b4')
+        .setTitle('✨ Ayuda del Bot ✨')
+        .setDescription('**¡Bienvenido al bot de la comunidad!**\n\nAquí tienes la lista de comandos disponibles y los permisos necesarios para cada uno. Usa los comandos tal como aparecen. Si tienes dudas, usa `!sorteo-ayuda` para detalles sobre sorteos.')
         .addFields(
-          { name: '!help', value: 'Muestra este mensaje de ayuda. (Todos los usuarios)' },
-          { name: '!allys <mensaje>', value: 'Envía un mensaje al canal de allys. (Solo rol ALLYS_ADMIN_ROLE_ID)' },
-          { name: '!clear <n>', value: 'Borra los últimos n mensajes. (Solo administradores)' },
-          { name: '!mute', value: 'Silencia a un usuario. (Solo administradores)' }
-          // ...agrega aquí más comandos si tienes otros
+          { name: '🆘 !help', value: 'Muestra este mensaje de ayuda. (Todos los usuarios)' },
+          { name: '🤝 !allys <mensaje>', value: 'Envía un mensaje al canal de allys. (Solo rol ALLYS_ADMIN_ROLE_ID)' },
+          { name: '🧹 !clear <n>', value: 'Borra los últimos n mensajes. (Solo administradores)' },
+          { name: '🔇 !mute', value: 'Silencia a un usuario. (Solo administradores)' },
+          { name: '🎉 !sorteo <tiempo> <ganadores> <premio>', value: 'Crea un sorteo. (Solo administradores)' },
+          { name: '🚫 !cancelar-sorteo <ID>', value: 'Cancela un sorteo activo. (Solo administradores)' },
+          { name: '🔄 !reroll-sorteo <ID>', value: 'Elige nuevos ganadores para un sorteo. (Solo administradores)' },
+          { name: '📋 !sorteos-activos', value: 'Lista los sorteos activos. (Solo administradores)' },
+          { name: '❓ !sorteo-ayuda', value: 'Muestra ayuda detallada sobre sorteos. (Todos los usuarios)' }
         )
-        .setFooter({ text: 'Bot de Discord - Railway' });
+        .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined })
+        .setThumbnail(client.user?.avatarURL() || undefined);
       await message.reply({ embeds: [helpEmbed] });
       return;
     }
