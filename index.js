@@ -524,23 +524,10 @@ client.on('messageCreate', async (message) => {
       const helpEmbed = new EmbedBuilder()
         .setColor('#ff69b4')
         .setTitle('✨ Ayuda del Bot ✨')
-        .setDescription('**¡Bienvenido al bot de la comunidad!**\n\nAquí tienes la lista de comandos disponibles y los permisos necesarios para cada uno. Usa los comandos tal como aparecen. Si tienes dudas, usa `!sorteo-ayuda` para detalles sobre sorteos.')
+        .setDescription('**¡Bienvenido al bot de la comunidad!**\n\nAquí tienes la lista de comandos disponibles para todos los miembros. Si tienes dudas sobre sorteos, usa `!sorteo-ayuda`.')
         .addFields(
-          { name: '🆘 !help', value: 'Muestra este mensaje de ayuda. (Todos los usuarios)' },
-          { name: '🤝 !allys <mensaje>', value: 'Envía un mensaje al canal de allys. (Solo rol ALLYS_ADMIN_ROLE_ID)' },
-          { name: '🧹 !clear <n>', value: 'Borra los últimos n mensajes. (Solo administradores)' },
-          { name: '🔇 !mute', value: 'Silencia a un usuario. (Solo administradores)' },
-          { name: '🔈 !unmute', value: 'Desilencia a un usuario. (Solo administradores)' },
-          { name: '🎫 !setup-ticket', value: 'Configura el sistema de tickets. (Solo administradores)' },
-          { name: '🔄 !sync-tickets', value: 'Sincroniza los tickets. (Solo administradores)' },
-          { name: '❌ !close', value: 'Cierra un ticket. (Solo administradores)' },
-          { name: '🎉 !sorteo <tiempo> <ganadores> <premio>', value: 'Crea un sorteo. (Solo administradores)' },
-          { name: '🚫 !cancelar-sorteo <ID>', value: 'Cancela un sorteo activo. (Solo administradores)' },
-          { name: '🔄 !reroll-sorteo <ID>', value: 'Elige nuevos ganadores para un sorteo. (Solo administradores)' },
-          { name: '📋 !sorteos-activos', value: 'Lista los sorteos activos. (Solo administradores)' },
-          { name: '❓ !sorteo-ayuda', value: 'Muestra ayuda detallada sobre sorteos. (Todos los usuarios)' },
-          { name: '👢 !kick <usuario> <razón>', value: 'Expulsa a un usuario. (Solo administradores)' },
-          { name: '🔨 !ban <usuario> <razón>', value: 'Banea a un usuario. (Solo administradores)' }
+          { name: '🆘 !help', value: 'Muestra este mensaje de ayuda.' },
+          { name: '❓ !sorteo-ayuda', value: 'Muestra ayuda detallada sobre sorteos.' }
         )
         .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined })
         .setThumbnail(client.user?.avatarURL() || undefined);
