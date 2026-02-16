@@ -484,6 +484,27 @@ client.on('clientReady', async () => {
 });
 
 client.on('messageCreate', async (message) => {
+            // Comando !avatar (nombre o @usuario)
+            if (message.content.startsWith('!avatar')) {
+              let user = message.mentions.users.first();
+              if (!user) {
+                const args = message.content.split(/\s+/).slice(1);
+                if (args.length > 0 && args[0]) {
+                  // Buscar por nombre de usuario (parcial, sin @)
+                  const username = args.join(' ').toLowerCase();
+                  user = message.guild.members.cache.find(m => m.user.username.toLowerCase().includes(username))?.user;
+                }
+              }
+              if (!user) user = message.author;
+
+              const avatarEmbed = new EmbedBuilder()
+                .setColor('#7289da')
+                .setTitle(`Avatar de ${user.tag}`)
+                .setImage(user.displayAvatarURL({ size: 512, extension: 'png', dynamic: true }))
+                .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined });
+              await message.reply({ embeds: [avatarEmbed] });
+              return;
+            }
         // Comando !comandosstaff
         if (message.content.trim() === '!comandosstaff') {
           if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
@@ -527,6 +548,7 @@ client.on('messageCreate', async (message) => {
         .setDescription('**¡Bienvenido al bot de la comunidad!**\n\nAquí tienes la lista de comandos disponibles para todos los miembros. Si tienes dudas sobre sorteos, usa `!sorteo-ayuda`.')
         .addFields(
           { name: '🆘 !help', value: 'Muestra este mensaje de ayuda.' },
+          { name: '🖼️ !avatar (@usuario o nombre)', value: 'Muestra el avatar de un usuario o el tuyo.' },
           { name: '❓ !sorteo-ayuda', value: 'Muestra ayuda detallada sobre sorteos.' }
         )
         .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined })
