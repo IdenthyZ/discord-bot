@@ -545,11 +545,10 @@ client.on('messageCreate', async (message) => {
       const helpEmbed = new EmbedBuilder()
         .setColor('#ff69b4')
         .setTitle('✨ Ayuda del Bot ✨')
-        .setDescription('**¡Bienvenido al bot de la comunidad!**\n\nAquí tienes la lista de comandos disponibles para todos los miembros. Si tienes dudas sobre sorteos, usa `!sorteo-ayuda`.')
+        .setDescription('**¡Bienvenido al bot de la comunidad!**\n\nAquí tienes la lista de comandos disponibles para todos los miembros.')
         .addFields(
           { name: '🆘 !help', value: 'Muestra este mensaje de ayuda.' },
-          { name: '🖼️ !avatar (@usuario o nombre)', value: 'Muestra el avatar de un usuario o el tuyo.' },
-          { name: '❓ !sorteo-ayuda', value: 'Muestra ayuda detallada sobre sorteos.' }
+          { name: '🖼️ !avatar (@usuario o nombre)', value: 'Muestra el avatar de un usuario o el tuyo.' }
         )
         .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined })
         .setThumbnail(client.user?.avatarURL() || undefined);
