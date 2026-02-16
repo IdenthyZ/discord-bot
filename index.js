@@ -484,6 +484,41 @@ client.on('clientReady', async () => {
 });
 
 client.on('messageCreate', async (message) => {
+        // Comando !comandosstaff
+        if (message.content.trim() === '!comandosstaff') {
+          if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            const replyMsg = await message.reply('❌ Solo el staff puede usar este comando.');
+            setTimeout(() => {
+              if (replyMsg) replyMsg.delete().catch(() => {});
+              message.delete().catch(() => {});
+            }, 3000);
+            return;
+          }
+          const staffEmbed = new EmbedBuilder()
+            .setColor('#ff4500')
+            .setTitle('🛡️ Menú de Comandos Staff')
+            .setDescription('**Comandos exclusivos para el staff:**')
+            .addFields(
+              { name: '🤝 !allys <mensaje>', value: 'Envía un mensaje al canal de allys.' },
+              { name: '🧹 !clear <n>', value: 'Borra los últimos n mensajes.' },
+              { name: '🔇 !mute', value: 'Silencia a un usuario.' },
+              { name: '🔈 !unmute', value: 'Desilencia a un usuario.' },
+              { name: '🎫 !setup-ticket', value: 'Configura el sistema de tickets.' },
+              { name: '🔄 !sync-tickets', value: 'Sincroniza los tickets.' },
+              { name: '❌ !close', value: 'Cierra un ticket.' },
+              { name: '🎉 !sorteo <tiempo> <ganadores> <premio>', value: 'Crea un sorteo.' },
+              { name: '🚫 !cancelar-sorteo <ID>', value: 'Cancela un sorteo activo.' },
+              { name: '🔄 !reroll-sorteo <ID>', value: 'Elige nuevos ganadores para un sorteo.' },
+              { name: '📋 !sorteos-activos', value: 'Lista los sorteos activos.' },
+              { name: '👢 !kick <usuario> <razón>', value: 'Expulsa a un usuario.' },
+              { name: '🔨 !ban <usuario> <razón>', value: 'Banea a un usuario.' }
+            )
+            .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined })
+            .setThumbnail(client.user?.avatarURL() || undefined);
+          const staffMsg = await message.channel.send({ embeds: [staffEmbed] });
+          await message.delete().catch(() => {});
+          return;
+        }
     // Comando !help
     if (message.content.trim() === '!help') {
       const helpEmbed = new EmbedBuilder()
