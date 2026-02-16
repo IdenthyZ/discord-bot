@@ -1,3 +1,7 @@
+// --- RPG DB ---
+const { db, initRPGDatabase } = require('./rpgdb');
+
+initRPGDatabase();
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Partials, PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
 import {
