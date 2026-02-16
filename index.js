@@ -1,3 +1,4 @@
+const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
 // Canal donde se enviarán los logs de auditoría
 const AUDIT_LOG_CHANNEL_ID = process.env.AUDIT_LOG_CHANNEL_ID || MOD_LOGS_CHANNEL_ID;
 
