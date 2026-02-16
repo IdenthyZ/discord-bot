@@ -544,14 +544,11 @@ client.on('messageCreate', async (message) => {
         )
         .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined })
         .setThumbnail(client.user?.avatarURL() || undefined);
-      const replyMsg = await message.author.send({ embeds: [helpEmbed] }).catch(async () => {
-        // Si no se puede enviar DM, enviar en canal pero solo visible para el usuario
-        return await message.reply({ embeds: [helpEmbed], ephemeral: true }).catch(() => null);
-      });
+      const replyMsg = await message.reply({ embeds: [helpEmbed], ephemeral: true }).catch(() => null);
       setTimeout(() => {
         if (replyMsg && replyMsg.delete) replyMsg.delete().catch(() => {});
         message.delete().catch(() => {});
-      }, 3000);
+      }, 30000);
       return;
     }
   if (!message.guild || message.author.bot) return;
