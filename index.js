@@ -484,6 +484,23 @@ client.on('clientReady', async () => {
 });
 
 client.on('messageCreate', async (message) => {
+    // Comando !help
+    if (message.content.trim() === '!help') {
+      const helpEmbed = new EmbedBuilder()
+        .setColor('#a3d8f4')
+        .setTitle('Comandos disponibles')
+        .setDescription('Lista de comandos y permisos necesarios:')
+        .addFields(
+          { name: '!help', value: 'Muestra este mensaje de ayuda. (Todos los usuarios)' },
+          { name: '!allys <mensaje>', value: 'Envía un mensaje al canal de allys. (Solo rol ALLYS_ADMIN_ROLE_ID)' },
+          { name: '!clear <n>', value: 'Borra los últimos n mensajes. (Solo administradores)' },
+          { name: '!mute', value: 'Silencia a un usuario. (Solo administradores)' }
+          // ...agrega aquí más comandos si tienes otros
+        )
+        .setFooter({ text: 'Bot de Discord - Railway' });
+      await message.reply({ embeds: [helpEmbed] });
+      return;
+    }
   if (!message.guild || message.author.bot) return;
   lastTextChannel = message.channel;
 
