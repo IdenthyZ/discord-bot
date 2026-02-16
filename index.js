@@ -3,14 +3,30 @@ const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
 const AUDIT_LOG_CHANNEL_ID = process.env.AUDIT_LOG_CHANNEL_ID || MOD_LOGS_CHANNEL_ID;
 
 
-// Auditoría: creación/eliminación de invitaciones
-client.on('inviteCreate', async (invite) => {
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  PermissionsBitField,
+  EmbedBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ActionRowBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ChannelType
+} from 'discord.js';
+import {
   entersState,
   createAudioPlayer,
   createAudioResource,
   NoSubscriberBehavior,
   AudioPlayerStatus,
   demuxProbe,
+  joinVoiceChannel,
+  getVoiceConnection,
+  VoiceConnectionStatus
 } from '@discordjs/voice';
 import { Readable } from 'node:stream';
 import fs from 'node:fs';
@@ -155,8 +171,12 @@ async function ensureMemberCountChannel(guild) {
 }
 
 async function updateMemberCountChannel(guild) {
+  // Forzar actualización de la lista de miembros para obtener el conteo real
+  await guild.members.fetch();
   const channel = await ensureMemberCountChannel(guild);
-  const desiredName = formatMemberCountName(guild.memberCount);
+  // Contar todos los miembros, incluyendo bots
+  const totalCount = guild.members.cache.size;
+  const desiredName = formatMemberCountName(totalCount);
   if (channel.name !== desiredName) {
     await channel.setName(desiredName);
   }
