@@ -517,23 +517,36 @@ client.on('messageCreate', async (message) => {
 
   // Comando !allys
   if (message.content.startsWith('!allys')) {
-    if (!message.member.roles?.cache?.has(ALLYS_ADMIN_ROLE_ID)) {
-      await message.reply('❌ Solo los administradores autorizados pueden usar este comando.');
-      return;
-    }
-
-    const texto = message.content.slice('!allys'.length).trim();
-
-    if (!texto) {
-      await message.reply('❌ Uso correcto: `!allys <mensaje>`');
-      return;
-    }
-
+    let replyMsg;
     try {
+      if (!message.member.roles?.cache?.has(ALLYS_ADMIN_ROLE_ID)) {
+        replyMsg = await message.reply('❌ Solo los administradores autorizados pueden usar este comando.');
+        setTimeout(() => {
+          if (replyMsg) replyMsg.delete().catch(() => {});
+          message.delete().catch(() => {});
+        }, 3000);
+        return;
+      }
+
+      const texto = message.content.slice('!allys'.length).trim();
+
+      if (!texto) {
+        replyMsg = await message.reply('❌ Uso correcto: `!allys <mensaje>`');
+        setTimeout(() => {
+          if (replyMsg) replyMsg.delete().catch(() => {});
+          message.delete().catch(() => {});
+        }, 3000);
+        return;
+      }
+
       const allysChannel = await message.guild.channels.fetch(ALLYS_CHANNEL_ID).catch(() => null);
 
       if (!allysChannel || !allysChannel.isTextBased()) {
-        await message.reply('❌ No encontré el canal de allys o no es un canal de texto.');
+        replyMsg = await message.reply('❌ No encontré el canal de allys o no es un canal de texto.');
+        setTimeout(() => {
+          if (replyMsg) replyMsg.delete().catch(() => {});
+          message.delete().catch(() => {});
+        }, 3000);
         return;
       }
 
@@ -544,10 +557,18 @@ client.on('messageCreate', async (message) => {
         .setTimestamp();
 
       await allysChannel.send({ embeds: [embed] });
-      await message.reply('✅ Mensaje enviado al canal de allys.');
+      replyMsg = await message.reply('✅ Mensaje enviado al canal de allys.');
+      setTimeout(() => {
+        if (replyMsg) replyMsg.delete().catch(() => {});
+        message.delete().catch(() => {});
+      }, 3000);
     } catch (err) {
       console.error('Error en !allys:', err);
-      await message.reply('❌ No pude enviar el mensaje al canal de allys.');
+      replyMsg = await message.reply('❌ No pude enviar el mensaje al canal de allys.');
+      setTimeout(() => {
+        if (replyMsg) replyMsg.delete().catch(() => {});
+        message.delete().catch(() => {});
+      }, 3000);
     }
     return;
   }
