@@ -1,4 +1,6 @@
 const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
+// ...existing code...
+// const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
 // Canal donde se enviarán los logs de auditoría
 const AUDIT_LOG_CHANNEL_ID = process.env.AUDIT_LOG_CHANNEL_ID || MOD_LOGS_CHANNEL_ID;
 
@@ -172,10 +174,9 @@ async function ensureMemberCountChannel(guild) {
 
 async function updateMemberCountChannel(guild) {
   // Forzar actualización de la lista de miembros para obtener el conteo real
-  await guild.members.fetch();
   const channel = await ensureMemberCountChannel(guild);
-  // Contar todos los miembros, incluyendo bots
-  const totalCount = guild.members.cache.size;
+  // Usar guild.memberCount directamente para evitar rate limit
+  const totalCount = guild.memberCount;
   const desiredName = formatMemberCountName(totalCount);
   if (channel.name !== desiredName) {
     await channel.setName(desiredName);
@@ -468,6 +469,19 @@ async function joinAndStay() {
 client.on('clientReady', async () => {
   console.log(`Conectado como ${client.user.tag}`);
   loadInvitesData();
+  loadSorteosData();
+  // Restaurar sorteos pendientes
+  for (const [messageId, sorteo] of activeSorteos) {
+    if (sorteo.endTime && Date.now() < sorteo.endTime) {
+      const msLeft = sorteo.endTime - Date.now();
+      setTimeout(async () => {
+        await finalizarSorteo(messageId);
+      }, msLeft);
+      console.log(`[Sorteos] Sorteo restaurado: ${sorteo.premio} (ID: ${messageId})`);
+    } else {
+      finalizarSorteo(messageId);
+    }
+  }
   await joinAndStay();
 
   // Auto-reproducir stream de Maxiradio 24/7
@@ -505,6 +519,39 @@ client.on('clientReady', async () => {
 });
 
 client.on('messageCreate', async (message) => {
+              // Comando !anuncios
+              if (message.content.startsWith('!anuncios')) {
+                // Solo administradores
+                if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+                  const replyMsg = await message.reply('❌ Solo los administradores pueden usar este comando.');
+                  setTimeout(() => {
+                    if (replyMsg) replyMsg.delete().catch(() => {});
+                    message.delete().catch(() => {});
+                  }, 3000);
+                  return;
+                }
+                // Canal específico de anuncios (ID proporcionado por el usuario)
+                const ANUNCIOS_CHANNEL_ID = '1474512549708828733';
+                const texto = message.content.slice('!anuncios'.length).trim();
+                if (!texto) {
+                  await message.reply('❌ Debes escribir el mensaje del anuncio.');
+                  return;
+                }
+                const anunciosChannel = message.guild.channels.cache.get(ANUNCIOS_CHANNEL_ID);
+                if (!anunciosChannel) {
+                  await message.reply('❌ Canal de anuncios no encontrado.');
+                  return;
+                }
+                const embed = new EmbedBuilder()
+                  .setColor('#742e7a')
+                  .setTitle('📢 Anuncio')
+                  .setDescription(texto)
+                  .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined })
+                  .setTimestamp();
+                await anunciosChannel.send({ content: '@everyone', embeds: [embed] });
+                await message.delete().catch(() => {});
+                return;
+              }
             // Comando !avatar (nombre o @usuario)
             if (message.content.startsWith('!avatar')) {
               let user = message.mentions.users.first();
@@ -526,6 +573,83 @@ client.on('messageCreate', async (message) => {
               await message.reply({ embeds: [avatarEmbed] });
               return;
             }
+          // Comando !rename (renombrar ticket solo admins en categoría de tickets)
+          if (message.content.startsWith('!rename ')) {
+            if (!TICKET_CATEGORY_ID) {
+              await message.reply('❌ No hay categoría de tickets configurada.');
+              return;
+            }
+            // Solo admins
+            const isAdmin = hasTicketClosePermission(message.member);
+            if (!isAdmin) {
+              await message.reply('❌ Solo los administradores pueden renombrar tickets.');
+              return;
+            }
+            // Solo en canales dentro de la categoría de tickets
+            if (message.channel.parentId !== TICKET_CATEGORY_ID) {
+              await message.reply('❌ Este comando solo se puede usar en canales de la categoría de tickets.');
+              return;
+            }
+            const args = message.content.split(/\s+/);
+            if (args.length < 2) {
+              await message.reply('❌ Uso: !rename <nuevo-nombre>');
+              return;
+            }
+            let newName = args.slice(1).join('-').replace(/[^a-zA-Z0-9-]/g, '').toLowerCase();
+            if (!newName || newName.length < 3 || newName.length > 90) {
+              await message.reply('❌ El nombre debe tener entre 3 y 90 caracteres y solo letras, números o guiones.');
+              return;
+            }
+            // Prefijo ticket-
+            if (!newName.startsWith('ticket-')) newName = 'ticket-' + newName;
+            try {
+              await message.channel.setName(newName);
+              const replyMsg = await message.reply(`✅ El ticket ha sido renombrado a **${newName}**.`);
+              // Eliminar ambos mensajes inmediatamente
+              if (replyMsg) replyMsg.delete().catch(() => {});
+              message.delete().catch(() => {});
+            } catch (err) {
+              const errorMsg = await message.reply('❌ No se pudo renombrar el ticket.');
+              if (errorMsg) errorMsg.delete().catch(() => {});
+              message.delete().catch(() => {});
+            }
+            return;
+          }
+          // Comando !rename (renombrar ticket solo admins, solo en canales de ticket y en la categoría de tickets)
+          if (message.content.startsWith('!rename ')) {
+            // Solo permitir en canales de ticket y en la categoría de tickets
+            const esTicket = message.channel.name && message.channel.name.startsWith('ticket-');
+            const enCategoria = message.channel.parentId === TICKET_CATEGORY_ID;
+            if (!esTicket || !enCategoria) {
+              await message.reply('❌ Este comando solo se puede usar en canales de ticket dentro de la categoría de tickets.');
+              return;
+            }
+            // Solo admins
+            const isAdmin = hasTicketClosePermission(message.member);
+            if (!isAdmin) {
+              await message.reply('❌ Solo los administradores pueden renombrar tickets.');
+              return;
+            }
+            const args = message.content.split(/\s+/);
+            if (args.length < 2) {
+              await message.reply('❌ Uso: !rename <nuevo-nombre>');
+              return;
+            }
+            let newName = args.slice(1).join('-').replace(/[^a-zA-Z0-9-]/g, '').toLowerCase();
+            if (!newName || newName.length < 3 || newName.length > 90) {
+              await message.reply('❌ El nombre debe tener entre 3 y 90 caracteres y solo letras, números o guiones.');
+              return;
+            }
+            // Prefijo ticket-
+            if (!newName.startsWith('ticket-')) newName = 'ticket-' + newName;
+            try {
+              await message.channel.setName(newName);
+              await message.reply(`✅ El ticket ha sido renombrado a **${newName}**.`);
+            } catch (err) {
+              await message.reply('❌ No se pudo renombrar el ticket.');
+            }
+            return;
+          }
         // Comando !comandosstaff
         if (message.content.trim() === '!comandosstaff') {
           if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
@@ -868,11 +992,10 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const isAdmin = hasTicketClosePermission(message.member);
-    const isTicketOwner = message.channel.topic && message.channel.topic.includes(message.author.id);
 
-    if (!isAdmin && !isTicketOwner) {
-      await message.reply('❌ Solo el creador del ticket o un administrador puede cerrarlo.');
+    const isAdmin = hasTicketClosePermission(message.member);
+    if (!isAdmin) {
+      await message.reply('❌ Solo los administradores pueden cerrar tickets.');
       return;
     }
 
@@ -909,15 +1032,21 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const args = message.content.split(/\s+/);
-    if (args.length < 4) {
-      await message.reply('❌ Uso correcto: `!sorteo <tiempo> <ganadores> <premio>`\nEjemplo: `!sorteo 1h 2 Discord Nitro`\nTiempos válidos: 1m, 5m, 10m, 1h, 1d, 7d');
-      return;
-    }
+    // ...existing code...
 
-    const timeStr = args[1];
-    const ganadores = parseInt(args[2]);
-    const premio = args.slice(3).join(' ');
+const args = message.content.split(/\s+/);
+if (args.length < 4) {
+    await message.reply('❌ Uso correcto: \n`!sorteo <tiempo> <ganadores> <premio>` (sorteo libre)\n`!sorteo <tiempo> <ganadores> <premio> invite` (sorteo con requisito de invitación)\nEjemplo: `!sorteo 1h 2 Discord Nitro invite`\nTiempos válidos: 1m, 5m, 10m, 1h, 1d, 7d');
+  return;
+}
+// ...existing code...
+const ganadores = parseInt(args[2]);
+const premio = args.slice(3).join(' ');
+// Validar número de ganadores
+if (isNaN(ganadores) || ganadores < 1 || ganadores > 20) {
+  await message.reply('❌ El número de ganadores debe ser entre 1 y 20.');
+  return;
+}
 
     // Validar número de ganadores
     if (isNaN(ganadores) || ganadores < 1 || ganadores > 20) {
@@ -957,13 +1086,16 @@ client.on('messageCreate', async (message) => {
     const endTime = Date.now() + milliseconds;
     const endTimestamp = Math.floor(endTime / 1000);
 
+    let requisitosTexto = requisitoInvite ? '\n\n🔒 Requisito: Debes haber invitado al menos a un amigo al servidor.' : '';
+
     const embed = new EmbedBuilder()
       .setTitle('🎉 SORTEO 🎉')
       .setDescription(
         `**Premio:** ${premio}\n\n` +
         `**Ganadores:** ${ganadores}\n` +
-        `**Finaliza:** <t:${endTimestamp}:R>\n\n` +
-        `Reacciona con 🎉 para participar!`
+        `**Finaliza:** <t:${endTimestamp}:R>\n` +
+        requisitosTexto +
+        '\n\nReacciona con 🎉 para participar!'
       )
       .setColor('#00FF00')
       .setFooter({ text: `Creado por ${message.author.tag}` })
@@ -996,81 +1128,27 @@ client.on('messageCreate', async (message) => {
         participantes: new Set(),
         endTime,
         channelId: sorteoChannel.id,
-        creatorId: message.author.id
+        creatorId: message.author.id,
+        requisitoInvite
       });
+      saveSorteosData();
 
-      await message.reply(`✅ Sorteo creado en <#${sorteoChannel.id}>!`);
-      await message.delete().catch(() => {});
-
-      // Programar fin del sorteo
       setTimeout(async () => {
         await finalizarSorteo(sorteoMsg.id);
       }, milliseconds);
 
-      console.log(`[Sorteo] Creado por ${message.author.tag}: ${premio} - ${ganadores} ganador(es) - Duración: ${timeStr}`);
+      await message.reply(`✅ Sorteo creado en <#${sorteoChannel.id}>!`);
+      await message.delete().catch(() => {});
+
+      console.log(`[Sorteo] Creado por ${message.author.tag}: ${premio} - ${ganadores} ganador(es) - Duración: ${timeStr} - Requisito: ${requisitoInvite ? 'invite' : 'ninguno'}`);
     } catch (err) {
       console.error('Error creando sorteo:', err);
       await message.reply('❌ Error al crear el sorteo. Verifica que el canal de sorteos exista y el bot tenga permisos.');
     }
     return;
+  // Fin bloque !cancelar-sorteo
   }
-
-  // Comando !cancelar-sorteo (cancelar sorteos activos)
-  if (message.content.startsWith('!cancelar-sorteo')) {
-    // Verificar que el usuario sea administrador
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-      await message.delete().catch(() => {});
-      const reply = await message.reply('❌ Solo los administradores pueden cancelar sorteos.');
-      setTimeout(() => {
-        reply.delete().catch(() => {});
-      }, 2000);
-      return;
-    }
-
-    const args = message.content.split(/\s+/);
-    if (args.length < 2) {
-      await message.reply('❌ Uso correcto: `!cancelar-sorteo <ID del mensaje>`\nEjemplo: `!cancelar-sorteo 1234567890123456789`\n\nPuedes obtener el ID haciendo clic derecho en el mensaje del sorteo → Copiar ID del mensaje');
-      return;
-    }
-
-    const messageId = args[1];
-    const sorteo = activeSorteos.get(messageId);
-
-    if (!sorteo) {
-      await message.reply('❌ No se encontró un sorteo activo con ese ID.');
-      return;
-    }
-
-    try {
-      const channel = await message.guild.channels.fetch(sorteo.channelId);
-      const sorteoMsg = await channel.messages.fetch(messageId);
-
-      // Actualizar embed a cancelado
-      const canceledEmbed = new EmbedBuilder()
-        .setTitle('🚫 SORTEO CANCELADO 🚫')
-        .setDescription(
-          `**Premio:** ${sorteo.premio}\n\n` +
-          `Este sorteo ha sido cancelado por un administrador.`
-        )
-        .setColor('#FF0000')
-        .setTimestamp();
-
-      await sorteoMsg.edit({ embeds: [canceledEmbed] });
-      await sorteoMsg.reactions.removeAll().catch(() => {});
-
-      // Remover sorteo activo
-      activeSorteos.delete(messageId);
-
-      await message.reply(`✅ Sorteo cancelado: **${sorteo.premio}**`);
-      console.log(`[Sorteo] Cancelado por ${message.author.tag}: ${sorteo.premio}`);
-    } catch (err) {
-      console.error('Error cancelando sorteo:', err);
-      await message.reply('❌ Error al cancelar el sorteo. Verifica que el ID del mensaje sea correcto.');
-    }
-    return;
-  }
-
-  // Comando !reroll-sorteo (elegir nuevos ganadores)
+// ...existing code...
   if (message.content.startsWith('!reroll-sorteo')) {
     // Verificar que el usuario sea administrador
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
@@ -1579,6 +1657,43 @@ client.on('channelUpdate', async (oldChannel, newChannel) => {
   }
 });
 
+// Algoritmo de shuffle para aleatoriedad total
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+}
+
+// Función para persistencia de sorteos
+const sorteosDataPath = path.join(process.cwd(), 'data', 'sorteos.json');
+function loadSorteosData() {
+  try {
+    if (!fs.existsSync(sorteosDataPath)) return;
+    const raw = fs.readFileSync(sorteosDataPath, 'utf-8');
+    const data = JSON.parse(raw);
+    for (const [messageId, sorteo] of Object.entries(data)) {
+      sorteo.participantes = new Set(sorteo.participantes || []);
+      activeSorteos.set(messageId, sorteo);
+    }
+  } catch (err) {
+    console.error('[Sorteos] Error cargando sorteos.json:', err);
+  }
+}
+function saveSorteosData() {
+  try {
+    fs.mkdirSync(path.dirname(sorteosDataPath), { recursive: true });
+    const data = {};
+    for (const [messageId, sorteo] of activeSorteos) {
+      data[messageId] = { ...sorteo, participantes: Array.from(sorteo.participantes) };
+    }
+    fs.writeFileSync(sorteosDataPath, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[Sorteos] Error guardando sorteos.json:', err);
+  }
+}
+
 // Función para finalizar sorteo y elegir ganadores
 async function finalizarSorteo(messageId) {
   const sorteo = activeSorteos.get(messageId);
@@ -1593,6 +1708,7 @@ async function finalizarSorteo(messageId) {
     if (!reaction) {
       await channel.send(`❌ El sorteo de **${sorteo.premio}** terminó sin participantes.`);
       activeSorteos.delete(messageId);
+      saveSorteosData();
       return;
     }
 
@@ -1602,19 +1718,15 @@ async function finalizarSorteo(messageId) {
     if (participantes.size === 0) {
       await channel.send(`❌ El sorteo de **${sorteo.premio}** terminó sin participantes válidos.`);
       activeSorteos.delete(messageId);
+      saveSorteosData();
       return;
     }
 
-    // Seleccionar ganadores aleatorios
-    const participantesArray = Array.from(participantes.values());
-    const numGanadores = Math.min(sorteo.ganadores, participantes.size);
-    const ganadores = [];
-
-    for (let i = 0; i < numGanadores; i++) {
-      const randomIndex = Math.floor(Math.random() * participantesArray.length);
-      ganadores.push(participantesArray[randomIndex]);
-      participantesArray.splice(randomIndex, 1);
-    }
+    // Seleccionar ganadores aleatorios con shuffle
+    let participantesArray = Array.from(participantes.values());
+    participantesArray = shuffleArray(participantesArray);
+    const numGanadores = Math.min(sorteo.ganadores, participantesArray.length);
+    const ganadores = participantesArray.slice(0, numGanadores);
 
     // Actualizar embed del sorteo a finalizado
     const endedEmbed = new EmbedBuilder()
@@ -1630,7 +1742,7 @@ async function finalizarSorteo(messageId) {
     await message.edit({ embeds: [endedEmbed] });
 
     // Anunciar ganadores
-    const anuncio = await channel.send(
+    await channel.send(
       `🎊 **¡SORTEO TERMINADO!** 🎊\n\n` +
       `**${ganadores.map(g => `<@${g.id}>`).join(', ')}** ${ganadores.length > 1 ? 'han' : 'ha'} ganado: **${sorteo.premio}**!\n\n` +
       `¡Felicidades! 🎉`
@@ -1638,15 +1750,17 @@ async function finalizarSorteo(messageId) {
 
     console.log(`[Sorteo] Finalizado: ${sorteo.premio} - Ganadores: ${ganadores.map(g => g.tag).join(', ')}`);
     activeSorteos.delete(messageId);
+    saveSorteosData();
   } catch (err) {
-    // Si el mensaje fue eliminado (error 10008), simplemente limpiar el sorteo
     if (err.code === 10008) {
       console.log(`[Sorteo] Mensaje eliminado, limpiando sorteo: ${sorteo.premio}`);
       activeSorteos.delete(messageId);
+      saveSorteosData();
       return;
     }
     console.error('Error finalizando sorteo:', err);
     activeSorteos.delete(messageId);
+    saveSorteosData();
   }
 }
 
@@ -1666,8 +1780,34 @@ client.on('messageReactionAdd', async (reaction, user) => {
 
   // Verificar si es un sorteo activo
   if (activeSorteos.has(reaction.message.id) && reaction.emoji.name === '🎉') {
-    const sorteo = activeSorteos.get(reaction.message.id);
+    // Verificar si el sorteo tiene requisito de invitación
+    // ...existing code...
+    if (sorteo && sorteo.requisitoInvite) {
+      const invitaciones = inviteCounts.get(user.id) || 0;
+      if (invitaciones < 1) {
+        // Quitar reacción si no cumple
+        try {
+          await reaction.users.remove(user.id);
+        } catch {}
+        if (reaction.message.channel) {
+          const aviso = await reaction.message.channel.send({
+            content: `❌ <@${user.id}>, para participar en este sorteo debes haber invitado al menos a un amigo al servidor.\n\nInvita a alguien y vuelve a intentarlo. ¡Gracias por apoyar la comunidad!`
+          });
+          setTimeout(() => {
+            aviso.delete().catch(() => {});
+          }, 30000);
+        }
+        return;
+      }
+    }
+    if (sorteo) {
+      sorteo.participantes.add(user.id);
+      saveSorteosData();
+      console.log(`[Sorteo] ${user.tag} participó en: ${sorteo.premio}`);
+    }
+    // ...existing code...
     sorteo.participantes.add(user.id);
+    saveSorteosData();
     console.log(`[Sorteo] ${user.tag} participó en: ${sorteo.premio}`);
   }
 });
@@ -1687,8 +1827,9 @@ client.on('messageReactionRemove', async (reaction, user) => {
 
   // Remover participante si quita su reacción
   if (activeSorteos.has(reaction.message.id) && reaction.emoji.name === '🎉') {
-    const sorteo = activeSorteos.get(reaction.message.id);
+    // ...existing code...
     sorteo.participantes.delete(user.id);
+    saveSorteosData();
     console.log(`[Sorteo] ${user.tag} se retiró de: ${sorteo.premio}`);
   }
 });
