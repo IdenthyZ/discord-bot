@@ -1042,7 +1042,13 @@ if (args.length < 4) {
 }
 // ...existing code...
 const ganadores = parseInt(args[2]);
-const premio = args.slice(3).join(' ');
+let requisitoInvite = false;
+let premioArr = args.slice(3);
+if (premioArr[premioArr.length - 1]?.toLowerCase() === 'invite') {
+  requisitoInvite = true;
+  premioArr = premioArr.slice(0, -1);
+}
+const premio = premioArr.join(' ');
 // Validar número de ganadores
 if (isNaN(ganadores) || ganadores < 1 || ganadores > 20) {
   await message.reply('❌ El número de ganadores debe ser entre 1 y 20.');
