@@ -530,8 +530,8 @@ client.on('messageCreate', async (message) => {
                   }, 3000);
                   return;
                 }
-                // Canal específico de anuncios (ID proporcionado por el usuario)
-                const ANUNCIOS_CHANNEL_ID = '1474512549708828733';
+                // Canal específico de anuncios desde .env
+                const ANUNCIOS_CHANNEL_ID = process.env.ANUNCIOS_CHANNEL_ID || message.channel.id;
                 const texto = message.content.slice('!anuncios'.length).trim();
                 if (!texto) {
                   await message.reply('❌ Debes escribir el mensaje del anuncio.');
@@ -665,6 +665,7 @@ client.on('messageCreate', async (message) => {
             .setTitle('🛡️ Menú de Comandos Staff')
             .setDescription('**Comandos exclusivos para el staff:**')
             .addFields(
+              { name: '📢 !anuncios <mensaje>', value: 'Envía un anuncio en embed a @everyone en el canal de anuncios.' },
               { name: '🤝 !allys <mensaje>', value: 'Envía un mensaje al canal de allys.' },
               { name: '🧹 !clear <n>', value: 'Borra los últimos n mensajes.' },
               { name: '🔇 !mute', value: 'Silencia a un usuario.' },
