@@ -18,7 +18,8 @@ import {
   TextInputBuilder,
   TextInputStyle,
   ChannelType,
-  Events
+  Events,
+  MessageFlags
 } from 'discord.js';
 import {
   entersState,
@@ -750,7 +751,7 @@ client.on('messageCreate', async (message) => {
         )
         .setFooter({ text: 'Bot de Discord • Railway', iconURL: client.user?.avatarURL() || undefined })
         .setThumbnail(client.user?.avatarURL() || undefined);
-      const replyMsg = await message.reply({ embeds: [helpEmbed], ephemeral: true }).catch(() => null);
+      const replyMsg = await message.reply({ embeds: [helpEmbed], flags: [MessageFlags.Ephemeral] }).catch(() => null);
       setTimeout(() => {
         if (replyMsg && replyMsg.delete) replyMsg.delete().catch(() => {});
         message.delete().catch(() => {});
@@ -1451,18 +1452,18 @@ client.on('interactionCreate', async (interaction) => {
     const requirement = parseInt(requirementStr);
 
     if (isNaN(winners) || winners < 1) {
-      return interaction.reply({ content: '❌ Número de ganadores inválido.', ephemeral: true });
+      return interaction.reply({ content: '❌ Número de ganadores inválido.', flags: [MessageFlags.Ephemeral] });
     }
 
     if (isNaN(requirement) || requirement < 0 || requirement > 3) {
-      return interaction.reply({ content: '❌ Los requisitos deben ser un número entre 0 y 3.', ephemeral: true });
+      return interaction.reply({ content: '❌ Los requisitos deben ser un número entre 0 y 3.', flags: [MessageFlags.Ephemeral] });
     }
 
     // Parsear tiempo
     const timeRegex = /^(\d+)([mhd])$/;
     const match = durationStr.match(timeRegex);
     if (!match) {
-      return interaction.reply({ content: '❌ Formato de tiempo inválido. Usa m, h o d.', ephemeral: true });
+      return interaction.reply({ content: '❌ Formato de tiempo inválido. Usa m, h o d.', flags: [MessageFlags.Ephemeral] });
     }
 
     let milliseconds = parseInt(match[1]);
@@ -1528,10 +1529,10 @@ client.on('interactionCreate', async (interaction) => {
 
       setTimeout(() => finalizarSorteo(sorteoMsg.id), milliseconds);
 
-      return interaction.reply({ content: `✅ Sorteo creado en <#${sorteoChannel.id}>!`, ephemeral: true });
+      return interaction.reply({ content: `✅ Sorteo creado en <#${sorteoChannel.id}>!`, flags: [MessageFlags.Ephemeral] });
     } catch (err) {
       console.error('Error al crear sorteo desde modal:', err);
-      return interaction.reply({ content: '❌ Error al crear el sorteo.', ephemeral: true });
+      return interaction.reply({ content: '❌ Error al crear el sorteo.', flags: [MessageFlags.Ephemeral] });
     }
   }
 
@@ -1542,14 +1543,14 @@ client.on('interactionCreate', async (interaction) => {
       if (!sorteo) {
         return interaction.reply({
           content: '❌ Este sorteo ya ha finalizado o no es válido.',
-          ephemeral: true
+          flags: [MessageFlags.Ephemeral]
         });
       }
 
       if (sorteo.participantes.has(interaction.user.id)) {
         return interaction.reply({
           content: '❌ Ya estás participando en este sorteo.',
-          ephemeral: true
+          flags: [MessageFlags.Ephemeral]
         });
       }
 
@@ -1559,7 +1560,7 @@ client.on('interactionCreate', async (interaction) => {
         if (userInvites < sorteo.requisitoInvite) {
           return interaction.reply({
             content: `❌ Requisito no cumplido: Debes haber invitado al menos a **${sorteo.requisitoInvite}** ${sorteo.requisitoInvite === 1 ? 'persona' : 'personas'} al servidor para participar.`,
-            ephemeral: true
+            flags: [MessageFlags.Ephemeral]
           });
         }
       }
@@ -1578,7 +1579,7 @@ client.on('interactionCreate', async (interaction) => {
 
       return interaction.reply({
         content: '✅ ¡Has entrado al sorteo exitosamente!',
-        ephemeral: true
+        flags: [MessageFlags.Ephemeral]
       });
     }
 
@@ -1589,7 +1590,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!channel.name.startsWith('ticket-')) {
         await interaction.reply({
           content: '❌ Este botón solo funciona en canales de ticket.',
-          ephemeral: true
+          flags: [MessageFlags.Ephemeral]
         });
         return;
       }
@@ -1601,7 +1602,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!isAdmin && !isTicketOwner) {
         await interaction.reply({
           content: '❌ Solo el creador del ticket o un administrador puede cerrarlo.',
-          ephemeral: true
+          flags: [MessageFlags.Ephemeral]
         });
         return;
       }
@@ -1644,7 +1645,7 @@ client.on('interactionCreate', async (interaction) => {
       if (existingTicket) {
         await interaction.reply({
           content: `❌ Ya tienes un ticket abierto: ${existingTicket}`,
-          ephemeral: true
+          flags: [MessageFlags.Ephemeral]
         });
         return;
       }
@@ -1690,7 +1691,7 @@ client.on('interactionCreate', async (interaction) => {
       if (existingTicket) {
         await interaction.reply({
           content: `❌ Ya tienes un ticket abierto: ${existingTicket}`,
-          ephemeral: true
+          flags: [MessageFlags.Ephemeral]
         });
         return;
       }
@@ -1788,7 +1789,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.reply({
           content: `✅ Tu ticket ha sido creado: ${ticketChannel}`,
-          ephemeral: true
+          flags: [MessageFlags.Ephemeral]
         });
 
         console.log(`[Tickets] Ticket creado para ${member.user.tag}`);
@@ -1796,7 +1797,7 @@ client.on('interactionCreate', async (interaction) => {
         console.error('Error creando ticket:', err);
         await interaction.reply({
           content: '❌ Error al crear el ticket. Contacta a un administrador.',
-          ephemeral: true
+          flags: [MessageFlags.Ephemeral]
         });
       }
       return;
