@@ -1073,6 +1073,25 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // Comando !invites (ver estadísticas de invitaciones)
+  if (message.content.startsWith('!invites')) {
+    const targetUser = message.mentions.users.first() || message.author;
+    const count = inviteCounts.get(targetUser.id) || 0;
+
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Estadísticas de Invitaciones')
+      .setColor('#B7FF00')
+      .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+      .addFields(
+        { name: 'Usuario', value: `${targetUser.tag}`, inline: true },
+        { name: 'Invitaciones Reales', value: `👤 **${count}**`, inline: true }
+      )
+      .setFooter({ text: 'MonsterMania Invite System' })
+      .setTimestamp();
+
+    return message.reply({ embeds: [embed] });
+  }
+
   // Comando !sorteo (abrir panel de creación)
   if (message.content.startsWith('!sorteo')) {
     // Verificar que el usuario sea administrador
