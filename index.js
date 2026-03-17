@@ -1134,17 +1134,21 @@ client.on('messageCreate', async (message) => {
       // Intentar en el canal de sorteos primero
       if (SORTEOS_CHANNEL_ID) {
         try {
-          sorteoChannel = await message.guild.channels.fetch(SORTEOS_CHANNEL_ID);
-          sorteoMsg = await sorteoChannel.messages.fetch(messageId);
-        } catch (err) {
-          // No está en el canal de sorteos, buscar en el canal actual
-        }
+          sorteoChannel = await message.guild.channels.fetch(SORTEOS_CHANNEL_ID).catch(() => null);
+          if (sorteoChannel) {
+            sorteoMsg = await sorteoChannel.messages.fetch(messageId).catch(() => null);
+          }
+        } catch (err) {}
       }
 
       // Si no se encontró, intentar en el canal actual
       if (!sorteoMsg) {
         sorteoChannel = message.channel;
-        sorteoMsg = await sorteoChannel.messages.fetch(messageId);
+        sorteoMsg = await sorteoChannel.messages.fetch(messageId).catch(() => null);
+      }
+
+      if (!sorteoMsg) {
+        return message.reply('❌ No pude encontrar ningún mensaje con ese ID. Asegúrate de que el ID sea correcto y que el mensaje no haya sido eliminado.');
       }
 
       let participantesArray = [];
