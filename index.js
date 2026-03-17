@@ -33,33 +33,41 @@ import Redis from 'ioredis';
 import http from 'node:http';
 import { execSync } from 'node:child_process';
 
-// 📡 Servidor de Salud (Iniciado de inmediato para Railway)
+// 📡 Servidor de Salud Ligero (Siempre ayuda, aunque sea worker)
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('OK');
 }).listen(PORT, '0.0.0.0', () => {
-  console.log(`📡 [HealthCheck] Servidor activo en puerto ${PORT}`);
+  console.log(`📡 [HealthCheck] Puerto ${PORT} abierto`);
 });
 
-// 🗄 Configuración de Redis con soporte TLS para Railway
+// 🛠 Monitorización de Memoria (Para detectar OOM en Railway)
+setInterval(() => {
+  const usage = process.memoryUsage();
+  console.log(`📊 [Memory] RSS: ${Math.round(usage.rss / 1024 / 1024)}MB | Heap: ${Math.round(usage.heapUsed / 1024 / 1024)}MB`);
+}, 60000);
+
+// 🗄 Configuración de Redis Tolerante
 const redisUrl = process.env.REDIS_URL;
 let redis = null;
 if (redisUrl) {
-  const redisOptions = redisUrl.startsWith('rediss://') 
-    ? { redisOptions: { tls: { rejectUnauthorized: false } } }
-    : {};
-  redis = new Redis(redisUrl, {
-    maxRetriesPerRequest: 5,
-    retryStrategy: (times) => Math.min(times * 100, 3000),
-    ...redisOptions
-  });
-  
-  redis.on('connect', () => console.log('✅ [Redis] Conectado exitosamente'));
-  redis.on('error', (err) => console.error('❌ [Redis] Error:', err.message));
+  try {
+    const redisOptions = redisUrl.startsWith('rediss://') 
+      ? { tls: { rejectUnauthorized: false } }
+      : {};
+    redis = new Redis(redisUrl, {
+      maxRetriesPerRequest: 5,
+      retryStrategy: (times) => Math.min(times * 200, 5000),
+      reconnectOnError: (err) => true,
+      ...redisOptions
+    });
+    redis.on('connect', () => console.log('✅ [Redis] Conectado'));
+    redis.on('error', (err) => console.log('⚠️ [Redis] Error (posiblemente reintentando):', err.message));
+  } catch (e) { console.error('❌ [Redis] Error crítico de inicio:', e.message); }
 }
 
-// 🛠 Configuración FFmpeg
+// 🛠 FFmpeg Config
 let ffmpegBin = ffmpegStatic;
 if (process.platform !== 'win32') {
   try {
@@ -70,20 +78,22 @@ if (process.platform !== 'win32') {
 process.env.FFMPEG_PATH = ffmpegBin;
 process.env.PRISM_MEDIA_FFMPEG_PATH = ffmpegBin;
 
-// 🤖 Variables de Entorno
-const TOKEN = process.env.DISCORD_TOKEN;
-const GUILD_ID = process.env.GUILD_ID;
-const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
-const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID;
-const MEMBER_ROLE_ID = process.env.MEMBER_ROLE_ID;
-const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID;
-const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID;
-const SORTEOS_CHANNEL_ID = process.env.SORTEOS_CHANNEL_ID;
-const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
-const TICKET_ADMIN_ROLE_ID = process.env.TICKET_ADMIN_ROLE_ID || '1442336261464658096';
+// 🤖 Discord Config
+const {
+  DISCORD_TOKEN: TOKEN,
+  GUILD_ID,
+  VOICE_CHANNEL_ID,
+  WELCOME_CHANNEL_ID,
+  MEMBER_ROLE_ID,
+  TICKET_CHANNEL_ID,
+  CHAT_CHANNEL_ID,
+  SORTEOS_CHANNEL_ID,
+  TICKET_CATEGORY_ID,
+  TICKET_ADMIN_ROLE_ID = '1442336261464658096'
+} = process.env;
 
 if (!TOKEN || !GUILD_ID || !VOICE_CHANNEL_ID) {
-  console.error('❌ Faltan variables críticas: DISCORD_TOKEN, GUILD_ID, VOICE_CHANNEL_ID');
+  console.error('❌ Faltan variables críticas');
   process.exit(1);
 }
 
@@ -113,8 +123,7 @@ const invitesCache = new Map();
 // --- LÓGICA DE PERSISTENCIA ---
 async function loadData() {
   try {
-    let rawInv;
-    if (redis) rawInv = await redis.get('bot:invites');
+    let rawInv = redis ? await redis.get('bot:invites').catch(() => null) : null;
     if (!rawInv && fs.existsSync('data/invites.json')) rawInv = fs.readFileSync('data/invites.json', 'utf-8');
     if (rawInv) {
       const data = JSON.parse(rawInv);
@@ -122,8 +131,7 @@ async function loadData() {
       if (data.members) Object.entries(data.members).forEach(([id, inv]) => memberInviters.set(id, inv));
     }
 
-    let rawSor;
-    if (redis) rawSor = await redis.get('bot:sorteos');
+    let rawSor = redis ? await redis.get('bot:sorteos').catch(() => null) : null;
     if (!rawSor && fs.existsSync('data/sorteos.json')) rawSor = fs.readFileSync('data/sorteos.json', 'utf-8');
     if (rawSor) {
       const data = JSON.parse(rawSor);
@@ -132,8 +140,7 @@ async function loadData() {
         activeSorteos.set(id, s);
       });
     }
-    console.log('✅ [Datos] Cargados correctamente');
-  } catch (err) { console.error('❌ [Datos] Error:', err.message); }
+  } catch (err) { console.error('⚠️ [Datos] Error al cargar:', err.message); }
 }
 
 async function saveData() {
@@ -141,7 +148,7 @@ async function saveData() {
     const invData = JSON.stringify({ counts: Object.fromEntries(inviteCounts), members: Object.fromEntries(memberInviters) });
     const sorData = JSON.stringify(Object.fromEntries(Array.from(activeSorteos.entries()).map(([id, s]) => [id, { ...s, participantes: Array.from(s.participantes) }])));
     
-    if (redis) {
+    if (redis && redis.status === 'ready') {
       await redis.set('bot:invites', invData);
       await redis.set('bot:sorteos', sorData);
     } else {
@@ -149,26 +156,30 @@ async function saveData() {
       fs.writeFileSync('data/invites.json', invData);
       fs.writeFileSync('data/sorteos.json', sorData);
     }
-  } catch (err) { console.error('❌ [Datos] Error al guardar:', err.message); }
+  } catch (err) { console.error('⚠️ [Datos] Error al guardar:', err.message); }
 }
 
 // --- RADIO ---
 const STREAM_URL = 'https://stream.maxiradio.mx:1033/live';
 async function startRadio() {
   try {
-    const res = await axios.get(STREAM_URL, { responseType: 'stream', timeout: 15000 });
+    console.log('📻 [Radio] Cargando stream...');
+    const res = await axios.get(STREAM_URL, { responseType: 'stream', timeout: 20000 });
     const { stream, type } = await demuxProbe(res.data);
     player.play(createAudioResource(stream, { inputType: type }));
     console.log('📻 [Radio] Reproduciendo');
   } catch (err) {
-    console.error('❌ [Radio] Error:', err.message);
-    setTimeout(startRadio, 10000);
+    console.error('⚠️ [Radio] Reintentando en 15s:', err.message);
+    setTimeout(startRadio, 15000);
   }
 }
 
-player.on(AudioPlayerStatus.Idle, startRadio);
+player.on(AudioPlayerStatus.Idle, () => {
+  console.log('📻 [Radio] Idle -> Rebotando...');
+  startRadio();
+});
 player.on('error', (err) => {
-  console.error('❌ [Radio] Error:', err.message);
+  console.error('❌ [Radio] Player Error:', err.message);
   setTimeout(startRadio, 5000);
 });
 
@@ -182,14 +193,14 @@ async function joinAndStay() {
       selfDeaf: true
     });
     connection.subscribe(player);
-    console.log('✅ [Voz] Conectado');
+    console.log('✅ [Voz] Canal unido');
   } catch (err) {
-    console.error('❌ [Voz] Error:', err.message);
-    setTimeout(joinAndStay, 20000);
+    console.error('⚠️ [Voz] Error:', err.message);
+    setTimeout(joinAndStay, 30000);
   }
 }
 
-// --- EVENTOS PRINCIPALES ---
+// --- EVENTOS ---
 client.once(Events.ClientReady, async () => {
   console.log(`🚀 [Bot] Online como ${client.user.tag}`);
   await loadData();
@@ -197,8 +208,8 @@ client.once(Events.ClientReady, async () => {
   startRadio();
 
   activeSorteos.forEach((s, id) => {
-    const remaining = s.endTime - Date.now();
-    setTimeout(() => finalizarSorteo(id), Math.max(remaining, 1000));
+    const rem = s.endTime - Date.now();
+    setTimeout(() => finalizarSorteo(id), Math.max(rem, 1000));
   });
 
   const g = await client.guilds.fetch(GUILD_ID).catch(() => null);
@@ -213,56 +224,54 @@ client.on('messageCreate', async (msg) => {
   if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
 
   if (msg.content === '!setup-ticket') {
-    const emb = new EmbedBuilder().setTitle('Sistema de Tickets').setDescription('Pulsa el botón de abajo para abrir un ticket de soporte.').setColor('#ff9cbf');
-    const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('Abrir Ticket').setStyle(ButtonStyle.Primary).setEmoji('📩'));
+    const emb = new EmbedBuilder().setTitle('Tickets').setDescription('Pulsa abajo para abrir un ticket.').setColor('#ff9cbf');
+    const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('Abrir Ticket').setStyle(ButtonStyle.Primary));
     msg.channel.send({ embeds: [emb], components: [btn] });
   }
 
   if (msg.content === '!sorteo') {
-    const emb = new EmbedBuilder().setTitle('Gestión de Sorteos').setDescription('Pulsa el botón para configurar un nuevo sorteo.').setColor('#00FF00');
-    const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('open_sorteo_modal').setLabel('Crear Sorteo').setStyle(ButtonStyle.Success).setEmoji('🎉'));
-    msg.channel.send({ embeds: [emb], components: [btn] });
+    const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('open_sorteo_modal').setLabel('Crear Sorteo').setStyle(ButtonStyle.Success));
+    msg.channel.send({ content: '🎉 ¿Nuevo sorteo?', components: [btn] });
   }
 });
 
 client.on('interactionCreate', async (i) => {
   if (i.isButton()) {
     if (i.customId === 'create_ticket') {
-      const modal = new ModalBuilder().setCustomId('ticket_modal').setTitle('Motivo del Soporte');
-      modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Explica brevemente tu problema').setStyle(TextInputStyle.Paragraph).setRequired(true)));
+      const modal = new ModalBuilder().setCustomId('ticket_modal').setTitle('Ticket');
+      modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Motivo').setStyle(TextInputStyle.Paragraph).setRequired(true)));
       return i.showModal(modal);
     }
     if (i.customId === 'open_sorteo_modal') {
-      const modal = new ModalBuilder().setCustomId('sorteo_modal').setTitle('Configurar Nuevo Sorteo');
+      const modal = new ModalBuilder().setCustomId('sorteo_modal').setTitle('Configurar Sorteo');
       modal.addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('dur').setLabel('Duración (ej: 10m, 1h, 1d)').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('win').setLabel('Número de Ganadores').setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('dur').setLabel('Duración (1m, 1h, 1d)').setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('win').setLabel('Ganadores').setStyle(TextInputStyle.Short).setRequired(true)),
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('prz').setLabel('Premio').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('req').setLabel('Invitaciones Necesarias (0-3)').setStyle(TextInputStyle.Short).setRequired(true))
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('req').setLabel('Invitaciones (0-3)').setStyle(TextInputStyle.Short).setRequired(true))
       );
       return i.showModal(modal);
     }
     if (i.customId === 'participar_sorteo') {
       const s = activeSorteos.get(i.message.id);
-      if (!s) return i.reply({ content: '❌ Este sorteo ya no está activo.', ephemeral: true });
+      if (!s) return i.reply({ content: '❌ No activo.', ephemeral: true });
       if (s.participantes.has(i.user.id)) {
         s.participantes.delete(i.user.id);
-        i.reply({ content: 'Has cancelado tu participación.', ephemeral: true });
+        i.reply({ content: 'Saliste.', ephemeral: true });
       } else {
         const req = s.requisitoInvite || 0;
-        if ((inviteCounts.get(i.user.id) || 0) < req) return i.reply({ content: `❌ Necesitas al menos ${req} invitaciones para participar.`, ephemeral: true });
+        if ((inviteCounts.get(i.user.id) || 0) < req) return i.reply({ content: `❌ Necesitas ${req} invitaciones.`, ephemeral: true });
         s.participantes.add(i.user.id);
-        i.reply({ content: '¡Ya estás participando en el sorteo! 🎉', ephemeral: true });
+        i.reply({ content: 'Participando! 🎉', ephemeral: true });
       }
       saveData();
       const emb = EmbedBuilder.from(i.message.embeds[0]).setFields({ name: 'Participantes', value: `${s.participantes.size}`, inline: true });
-      i.message.edit({ embeds: [emb] });
+      i.message.edit({ embeds: [emb] }).catch(() => {});
     }
   }
 
   if (i.isModalSubmit()) {
     if (i.customId === 'ticket_modal') {
-      await i.deferReply({ ephemeral: true });
       try {
         const ch = await i.guild.channels.create({
           name: `ticket-${i.user.username}`,
@@ -273,23 +282,20 @@ client.on('interactionCreate', async (i) => {
             { id: TICKET_ADMIN_ROLE_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
           ]
         });
-        const emb = new EmbedBuilder().setTitle('Ticket de Soporte').setDescription(`**Usuario:** ${i.user}\n**Motivo:** ${i.fields.getTextInputValue('motivo')}`).setColor('#ff9cbf').setTimestamp();
-        ch.send({ content: `${i.user} | <@&${TICKET_ADMIN_ROLE_ID}>`, embeds: [emb] });
-        i.editReply({ content: `Ticket creado exitosamente: ${ch}` });
-      } catch (err) {
-        i.editReply({ content: '❌ Error al crear el ticket. Verifica los permisos del bot.' });
-      }
+        ch.send({ content: `${i.user} | <@&${TICKET_ADMIN_ROLE_ID}>\n**Motivo:** ${i.fields.getTextInputValue('motivo')}` });
+        i.reply({ content: `Creado: ${ch}`, ephemeral: true });
+      } catch (err) { i.reply({ content: '❌ Error al crear.', ephemeral: true }); }
     }
     if (i.customId === 'sorteo_modal') {
       const dur = i.fields.getTextInputValue('dur'), win = parseInt(i.fields.getTextInputValue('win')), prz = i.fields.getTextInputValue('prz'), req = parseInt(i.fields.getTextInputValue('req'));
       const match = dur.match(/^(\d+)([mhd])$/);
-      if (!match) return i.reply({ content: 'Formato de tiempo inválido (ej: 10m, 1h, 1d)', ephemeral: true });
+      if (!match) return i.reply({ content: 'Error formato (10m, 1h, 1d)', ephemeral: true });
       
       let ms = parseInt(match[1]) * 60000;
       if (match[2] === 'h') ms *= 60; if (match[2] === 'd') ms *= 24;
       const endTime = Date.now() + ms;
       
-      const emb = new EmbedBuilder().setTitle('🎉 ¡NUEVO SORTEO!').setDescription(`**Premio:** ${prz}\n**Ganadores:** ${win}\n**Requisito:** ${req} invitaciones\n**Termina:** <t:${Math.floor(endTime/1000)}:R>`).addFields({ name: 'Participantes', value: '0', inline: true }).setColor('#00FF00').setTimestamp();
+      const emb = new EmbedBuilder().setTitle('🎉 ¡SORTEO!').setDescription(`**Premio:** ${prz}\n**Ganadores:** ${win}\n**Termina:** <t:${Math.floor(endTime/1000)}:R>`).addFields({ name: 'Participantes', value: '0', inline: true }).setColor('#00FF00');
       const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('participar_sorteo').setLabel('Participar').setStyle(ButtonStyle.Success).setEmoji('🎉'));
       
       const ch = SORTEOS_CHANNEL_ID ? await i.guild.channels.fetch(SORTEOS_CHANNEL_ID) : i.channel;
@@ -298,7 +304,7 @@ client.on('interactionCreate', async (i) => {
       activeSorteos.set(msg.id, { premio: prz, ganadores: win, endTime, channelId: ch.id, requisitoInvite: req, participantes: new Set() });
       saveData();
       setTimeout(() => finalizarSorteo(msg.id), ms);
-      i.reply({ content: 'Sorteo publicado correctamente.', ephemeral: true });
+      i.reply({ content: 'Publicado.', ephemeral: true });
     }
   }
 });
@@ -309,9 +315,9 @@ async function finalizarSorteo(id) {
     const ch = await client.channels.fetch(s.channelId);
     const msg = await ch.messages.fetch(id);
     const winners = Array.from(s.participantes).sort(() => 0.5 - Math.random()).slice(0, s.ganadores);
-    const emb = EmbedBuilder.from(msg.embeds[0]).setTitle('🎉 SORTEO FINALIZADO').setDescription(`**Premio:** ${s.premio}\n**Ganadores:** ${winners.map(w => `<@${w}>`).join(', ') || 'Nadie'}`).setColor('#FF0000');
+    const emb = EmbedBuilder.from(msg.embeds[0]).setTitle('🎉 FINALIZADO').setDescription(`**Premio:** ${s.premio}\n**Ganadores:** ${winners.map(w => `<@${w}>`).join(', ') || 'Nadie'}`).setColor('#FF0000');
     await msg.edit({ embeds: [emb], components: [] });
-    if (winners.length) ch.send(`🎊 ¡Felicidades ${winners.map(w => `<@${w}>`).join(', ')}! Has ganado **${s.premio}**.`);
+    if (winners.length) ch.send(`🎊 ¡Felicidades ${winners.map(w => `<@${w}>`).join(', ')}! Ganaste **${s.premio}**.`);
   } catch {}
   activeSorteos.delete(id); saveData();
 }
@@ -329,14 +335,14 @@ client.on('guildMemberAdd', async (m) => {
 
   if (WELCOME_CHANNEL_ID) {
     const ch = await m.guild.channels.fetch(WELCOME_CHANNEL_ID).catch(() => null);
-    if (ch) {
-      const emb = new EmbedBuilder().setTitle(`¡Bienvenido/a ${m.user.username}!`).setDescription(`Disfruta de tu estancia en **${m.guild.name}**`).setColor('#ff9cbf').setThumbnail(m.user.displayAvatarURL());
-      ch.send({ embeds: [emb] });
-    }
+    if (ch) ch.send({ embeds: [new EmbedBuilder().setTitle(`¡Bienvenido ${m.user.username}!`).setColor('#ff9cbf').setThumbnail(m.user.displayAvatarURL())] });
   }
   if (MEMBER_ROLE_ID) m.roles.add(MEMBER_ROLE_ID).catch(() => {});
 });
 
+// Captura de apagado Railway
+process.on('SIGTERM', () => { console.log('👋 [System] SIGTERM recibido (Railway apagando)'); process.exit(0); });
+process.on('SIGINT', () => { console.log('👋 [System] SIGINT recibido'); process.exit(0); });
 process.on('unhandledRejection', (r) => console.error('🔴 Rejection:', r));
 process.on('uncaughtException', (e) => console.error('🔴 Exception:', e));
 
