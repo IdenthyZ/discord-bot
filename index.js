@@ -17,7 +17,8 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  ChannelType
+  ChannelType,
+  Events
 } from 'discord.js';
 import {
   entersState,
@@ -507,7 +508,7 @@ async function joinAndStay() {
   return connection;
 }
 
-client.on('ready', async () => {
+client.on(Events.ClientReady, async () => {
   console.log(`Conectado como ${client.user.tag}`);
   loadInvitesData();
   await loadSorteosData();
