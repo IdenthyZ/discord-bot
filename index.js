@@ -1155,19 +1155,26 @@ client.on('messageCreate', async (message) => {
         participantesArray = Array.from(sorteoStored.participantes);
         numGanadores = sorteoStored.ganadores;
       } else {
-        // Fallback: Reacciones (Sorteos viejos)
+        // Fallback: Reacciones (Sorteos viejos o no encontrados en Map)
         const reaction = sorteoMsg.reactions.cache.get('🎉');
         if (reaction) {
           const users = await reaction.users.fetch();
           participantesArray = Array.from(users.filter(u => !u.bot).keys());
         }
 
-        // Obtener ganadores del embed
+        // Obtener ganadores del embed (intentar varios formatos)
         const embed = sorteoMsg.embeds[0];
         const description = embed?.description || '';
-        const ganadoresMatch = description.match(/\*\*Ganadores?:\*\*\s*(\d+)/i) || description.match(/\*\*Ganador\(es\):\*\*\s*(?:<@\d+>(?:,\s*)?)+/);
-        if (ganadoresMatch && ganadoresMatch[1] && !isNaN(ganadoresMatch[1])) {
-          numGanadores = parseInt(ganadoresMatch[1]);
+        
+        // Buscar "Ganadores: X" o "Ganador(es): <@ID>, <@ID>"
+        const countMatch = description.match(/\*\*Ganadores:\*\*\s*(\d+)/i);
+        if (countMatch) {
+          numGanadores = parseInt(countMatch[1]);
+        } else {
+          const mentionMatch = description.match(/\*\*Ganador\(es\):\*\*\s*((?:<@\d+>(?:,\s*)?)+)/);
+          if (mentionMatch) {
+            numGanadores = mentionMatch[1].split(',').length;
+          }
         }
       }
 
