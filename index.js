@@ -38,18 +38,37 @@ import axios from 'axios';
 import ffmpegStatic from 'ffmpeg-static';
 import Redis from 'ioredis';
 
+// Manejador de advertencias para diagnóstico
+process.on('warning', (warning) => {
+  console.warn(`[NodeWarning] ${warning.name}: ${warning.message}`);
+  if (warning.stack) console.warn(warning.stack);
+});
+
 // Configuración de Redis
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const redis = new Redis(REDIS_URL, {
+const redisOptions = {
   maxRetriesPerRequest: null,
   retryStrategy(times) {
     const delay = Math.min(times * 50, 2000);
     return delay;
   }
-});
+};
+
+// Activar TLS si la URL empieza con rediss:// (común en Railway externo)
+if (REDIS_URL.startsWith('rediss://')) {
+  redisOptions.tls = { rejectUnauthorized: false };
+}
+
+const redis = new Redis(REDIS_URL, redisOptions);
 
 redis.on('connect', () => console.log('[Redis] Conectado exitosamente.'));
-redis.on('error', (err) => console.error('[Redis] Error de conexión:', err));
+redis.on('error', (err) => {
+  if (err.message.includes('ECONNREFUSED')) {
+    console.error('[Redis] Error: No se pudo conectar. ¿Está configurada la variable REDIS_URL en Railway?');
+  } else {
+    console.error('[Redis] Error de conexión:', err);
+  }
+});
 
 // Configuración de FFmpeg: Priorizar Windows si existe, sino usar ffmpeg-static (Railway/Linux)
 let ffmpegBin = 'C:\\ffmpeg\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe';
