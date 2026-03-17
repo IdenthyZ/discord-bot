@@ -136,14 +136,13 @@ const invitesCache = new Map();
 const inviteCounts = new Map();
 const memberInviters = new Map();
 
-const invitesDataPath = path.join(process.cwd(), 'data', 'invites.json');
-
-function loadInvitesData() {
+// Función para persistencia de invitaciones en Redis
+async function loadInvitesData() {
   try {
-    if (!fs.existsSync(invitesDataPath)) return;
-    const raw = fs.readFileSync(invitesDataPath, 'utf-8');
+    const raw = await redis.get('botInvites');
+    if (!raw) return;
+    
     const data = JSON.parse(raw);
-
     const counts = data?.counts || {};
     const members = data?.members || {};
 
@@ -154,20 +153,20 @@ function loadInvitesData() {
     for (const [memberId, inviterId] of Object.entries(members)) {
       memberInviters.set(memberId, inviterId);
     }
+    console.log(`[Invites] Datos de invitaciones cargados desde Redis.`);
   } catch (err) {
-    console.error('[Invites] Error cargando invites.json:', err);
+    console.error('[Invites] Error cargando invites desde Redis:', err);
   }
 }
 
-function saveInvitesData() {
+async function saveInvitesData() {
   try {
-    fs.mkdirSync(path.dirname(invitesDataPath), { recursive: true });
     const countsObj = Object.fromEntries(inviteCounts.entries());
     const membersObj = Object.fromEntries(memberInviters.entries());
     const data = { counts: countsObj, members: membersObj };
-    fs.writeFileSync(invitesDataPath, JSON.stringify(data, null, 2), 'utf-8');
+    await redis.set('botInvites', JSON.stringify(data));
   } catch (err) {
-    console.error('[Invites] Error guardando invites.json:', err);
+    console.error('[Invites] Error guardando invites en Redis:', err);
   }
 }
 
@@ -511,7 +510,7 @@ async function joinAndStay() {
 
 client.on(Events.ClientReady, async () => {
   console.log(`Conectado como ${client.user.tag}`);
-  loadInvitesData();
+  await loadInvitesData();
   await loadSorteosData();
   
   // Intentar unir al bot al canal de voz al iniciar
@@ -2062,7 +2061,7 @@ client.on('guildMemberAdd', async (member) => {
       const newCount = currentCount + 1;
       inviteCounts.set(inviterId, newCount);
       memberInviters.set(member.id, inviterId);
-      saveInvitesData();
+      await saveInvitesData();
 
       if (invitesChannel && invitesChannel.isTextBased()) {
         const embed = new EmbedBuilder()
@@ -2176,7 +2175,7 @@ client.on('guildMemberRemove', async (member) => {
   const newCount = Math.max(0, currentCount - 1);
   inviteCounts.set(inviterId, newCount);
   memberInviters.delete(member.id);
-  saveInvitesData();
+  await saveInvitesData();
 
   try {
     const invitesChannel = INVITES_CHANNEL_ID
