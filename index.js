@@ -36,6 +36,20 @@ import path from 'node:path';
 import https from 'https';
 import axios from 'axios';
 import ffmpegStatic from 'ffmpeg-static';
+import Redis from 'ioredis';
+
+// Configuración de Redis
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+const redis = new Redis(REDIS_URL, {
+  maxRetriesPerRequest: null,
+  retryStrategy(times) {
+    const delay = Math.min(times * 50, 2000);
+    return delay;
+  }
+});
+
+redis.on('connect', () => console.log('[Redis] Conectado exitosamente.'));
+redis.on('error', (err) => console.error('[Redis] Error de conexión:', err));
 
 // Configuración de FFmpeg: Priorizar Windows si existe, sino usar ffmpeg-static (Railway/Linux)
 let ffmpegBin = 'C:\\ffmpeg\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe';
@@ -474,10 +488,10 @@ async function joinAndStay() {
   return connection;
 }
 
-client.on('clientReady', async () => {
+client.on('ready', async () => {
   console.log(`Conectado como ${client.user.tag}`);
   loadInvitesData();
-  loadSorteosData();
+  await loadSorteosData();
   
   // Intentar unir al bot al canal de voz al iniciar
   try {
@@ -489,6 +503,8 @@ client.on('clientReady', async () => {
 
   // Restaurar sorteos pendientes
   for (const [messageId, sorteo] of activeSorteos) {
+    if (sorteo.finalizado) continue;
+    
     if (sorteo.endTime && Date.now() < sorteo.endTime) {
       const msLeft = sorteo.endTime - Date.now();
       setTimeout(async () => {
@@ -1037,7 +1053,7 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Comando !sorteo (crear sorteos)
+  // Comando !sorteo (abrir panel de creación)
   if (message.content.startsWith('!sorteo')) {
     // Verificar que el usuario sea administrador
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
@@ -1049,124 +1065,26 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const args = message.content.split(/\s+/);
-    if (args.length < 4) {
-      await message.reply('❌ Uso correcto: \n`!sorteo <tiempo> <ganadores> <premio>` (sorteo libre)\n`!sorteo <tiempo> <ganadores> <premio> invite` (sorteo con requisito de invitación)\nEjemplo: `!sorteo 1h 2 Discord Nitro invite`\nTiempos válidos: 1m, 5m, 10m, 1h, 1d, 7d');
-      return;
-    }
-
-    const timeStr = args[1];
-    const ganadores = parseInt(args[2]);
-    let requisitoInvite = false;
-    let premioArr = args.slice(3);
-    
-    if (premioArr[premioArr.length - 1]?.toLowerCase() === 'invite') {
-      requisitoInvite = true;
-      premioArr = premioArr.slice(0, -1);
-    }
-    const premio = premioArr.join(' ');
-
-    // Validar número de ganadores
-    if (isNaN(ganadores) || ganadores < 1 || ganadores > 20) {
-      await message.reply('❌ El número de ganadores debe ser entre 1 y 20.');
-      return;
-    }
-
-    // Parsear tiempo (ej: 10m, 1h, 1d)
-    const timeRegex = /^(\d+)([mhd])$/;
-    const match = timeStr.match(timeRegex);
-    
-    if (!match) {
-      await message.reply('❌ Formato de tiempo inválido. Usa: m (minutos), h (horas), d (días)\nEjemplo: 30m, 2h, 1d');
-      return;
-    }
-
-    const timeValue = parseInt(match[1]);
-    const timeUnit = match[2];
-    
-    let milliseconds = 0;
-    switch (timeUnit) {
-      case 'm': milliseconds = timeValue * 60 * 1000; break;
-      case 'h': milliseconds = timeValue * 60 * 60 * 1000; break;
-      case 'd': milliseconds = timeValue * 24 * 60 * 60 * 1000; break;
-    }
-
-    if (milliseconds < 60000) {
-      await message.reply('❌ El tiempo mínimo es de 1 minuto.');
-      return;
-    }
-
-    if (milliseconds > 30 * 24 * 60 * 60 * 1000) {
-      await message.reply('❌ El tiempo máximo es de 30 días.');
-      return;
-    }
-
-    const endTime = Date.now() + milliseconds;
-    const endTimestamp = Math.floor(endTime / 1000);
-
-    let requisitosTexto = requisitoInvite ? '\n\n🔒 Requisito: Debes haber invitado al menos a un amigo al servidor.' : '';
-
     const embed = new EmbedBuilder()
-      .setTitle('🎉 SORTEO 🎉')
-      .setDescription(
-        `**Premio:** ${premio}\n\n` +
-        `**Ganadores:** ${ganadores}\n` +
-        `**Finaliza:** <t:${endTimestamp}:R>\n` +
-        requisitosTexto +
-        '\n\nReacciona con 🎉 para participar!'
-      )
-      .setColor('#00FF00')
-      .setFooter({ text: `Creado por ${message.author.tag}` })
-      .setTimestamp();
+      .setTitle('🎉 Configuración de Sorteos')
+      .setDescription('Presiona el botón de abajo para configurar un nuevo sorteo.')
+      .setColor('#5865F2')
+      .setFooter({ text: 'MonsterMania Giveaway System' });
 
-    try {
-      // Cambiar al canal de sorteos si está configurado
-      let sorteoChannel = message.channel;
-      if (SORTEOS_CHANNEL_ID) {
-        sorteoChannel = await message.guild.channels.fetch(SORTEOS_CHANNEL_ID);
-      }
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('open_sorteo_modal')
+        .setLabel('Configurar Nuevo Sorteo')
+        .setEmoji('📝')
+        .setStyle(ButtonStyle.Primary)
+    );
 
-      // Preparar mensaje con mención
-      let mencionContent = '@everyone';
-      if (MEMBER_ROLE_ID) {
-        mencionContent = `<@&${MEMBER_ROLE_ID}>`;
-      }
-
-      const sorteoMsg = await sorteoChannel.send({ 
-        content: `${mencionContent} 🎉 **¡NUEVO SORTEO!** 🎉`,
-        embeds: [embed],
-        allowedMentions: { parse: ['everyone', 'roles'] }
-      });
-      await sorteoMsg.react('🎉');
-
-      // Guardar sorteo activo
-      activeSorteos.set(sorteoMsg.id, {
-        premio,
-        ganadores,
-        participantes: new Set(),
-        endTime,
-        channelId: sorteoChannel.id,
-        creatorId: message.author.id,
-        requisitoInvite
-      });
-      saveSorteosData();
-
-      setTimeout(async () => {
-        await finalizarSorteo(sorteoMsg.id);
-      }, milliseconds);
-
-      await message.reply(`✅ Sorteo creado en <#${sorteoChannel.id}>!`);
-      await message.delete().catch(() => {});
-
-      console.log(`[Sorteo] Creado por ${message.author.tag}: ${premio} - ${ganadores} ganador(es) - Duración: ${timeStr} - Requisito: ${requisitoInvite ? 'invite' : 'ninguno'}`);
-    } catch (err) {
-      console.error('Error creando sorteo:', err);
-      await message.reply('❌ Error al crear el sorteo. Verifica que el canal de sorteos exista y el bot tenga permisos.');
-    }
+    await message.reply({ embeds: [embed], components: [row] });
+    await message.delete().catch(() => {});
     return;
-  // Fin bloque !cancelar-sorteo
   }
-// ...existing code...
+
+  // Comando !reroll-sorteo (elegir nuevos ganadores)
   if (message.content.startsWith('!reroll-sorteo')) {
     // Verificar que el usuario sea administrador
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
@@ -1185,6 +1103,7 @@ client.on('messageCreate', async (message) => {
     }
 
     const messageId = args[1];
+    const sorteoStored = activeSorteos.get(messageId);
 
     try {
       // Buscar el mensaje del sorteo (puede estar en cualquier canal de texto)
@@ -1207,54 +1126,64 @@ client.on('messageCreate', async (message) => {
         sorteoMsg = await sorteoChannel.messages.fetch(messageId);
       }
 
-      // Verificar que el mensaje tenga reacción de sorteo
-      const reaction = sorteoMsg.reactions.cache.get('🎉');
-      if (!reaction) {
-        await message.reply('❌ Este mensaje no es un sorteo válido (no tiene reacciones 🎉).');
-        return;
+      let participantesArray = [];
+      let numGanadores = 1;
+
+      if (sorteoStored) {
+        // Usar datos almacenados (Botones)
+        participantesArray = Array.from(sorteoStored.participantes);
+        numGanadores = sorteoStored.ganadores;
+      } else {
+        // Fallback: Reacciones (Sorteos viejos)
+        const reaction = sorteoMsg.reactions.cache.get('🎉');
+        if (reaction) {
+          const users = await reaction.users.fetch();
+          participantesArray = Array.from(users.filter(u => !u.bot).keys());
+        }
+
+        // Obtener ganadores del embed
+        const embed = sorteoMsg.embeds[0];
+        const description = embed?.description || '';
+        const ganadoresMatch = description.match(/\*\*Ganadores?:\*\*\s*(\d+)/i) || description.match(/\*\*Ganador\(es\):\*\*\s*(?:<@\d+>(?:,\s*)?)+/);
+        if (ganadoresMatch && ganadoresMatch[1] && !isNaN(ganadoresMatch[1])) {
+          numGanadores = parseInt(ganadoresMatch[1]);
+        }
       }
 
-      // Obtener participantes
-      const users = await reaction.users.fetch();
-      const participantes = users.filter(u => !u.bot);
-
-      if (participantes.size === 0) {
+      if (participantesArray.length === 0) {
         await message.reply('❌ No hay participantes válidos en este sorteo.');
         return;
       }
 
-      // Obtener número de ganadores del embed original
-      const embed = sorteoMsg.embeds[0];
-      const description = embed.description || '';
-      const ganadoresMatch = description.match(/\*\*Ganadores?:\*\*\s*(\d+)/i) || description.match(/\*\*Ganador\(es\):\*\*\s*(?:<@\d+>(?:,\s*)?)+/);
-      
-      let numGanadores = 1;
-      if (ganadoresMatch && ganadoresMatch[1]) {
-        numGanadores = parseInt(ganadoresMatch[1]);
-      }
-
       // Seleccionar nuevos ganadores aleatorios
-      const participantesArray = Array.from(participantes.values());
-      numGanadores = Math.min(numGanadores, participantes.size);
-      const ganadores = [];
+      participantesArray = shuffleArray(participantesArray);
+      numGanadores = Math.min(numGanadores, participantesArray.length);
+      const nuevosGanadoresIds = participantesArray.slice(0, numGanadores);
 
-      for (let i = 0; i < numGanadores; i++) {
-        const randomIndex = Math.floor(Math.random() * participantesArray.length);
-        ganadores.push(participantesArray[randomIndex]);
-        participantesArray.splice(randomIndex, 1);
-      }
+      // Obtener el premio
+      const embedOriginal = sorteoMsg.embeds[0];
+      const premio = embedOriginal?.description?.match(/\*\*Premio:\*\*\s*(.+)/)?.[1]?.split('\n')[0] || 'Premio desconocido';
 
       // Anunciar nuevos ganadores
-      const premio = embed.description?.match(/\*\*Premio:\*\*\s*(.+)/)?.[1]?.split('\n')[0] || 'Premio desconocido';
-      
       await message.channel.send(
         `🔄 **¡REROLL DE SORTEO!** 🔄\n\n` +
-        `**Nuevos ganador(es):** ${ganadores.map(g => `<@${g.id}>`).join(', ')}\n` +
+        `**Nuevos ganador(es):** ${nuevosGanadoresIds.map(id => `<@${id}>`).join(', ')}\n` +
         `**Premio:** ${premio}\n\n` +
         `¡Felicidades! 🎉`
       );
 
-      console.log(`[Sorteo] Reroll por ${message.author.tag} - Nuevos ganadores: ${ganadores.map(g => g.tag).join(', ')}`);
+      // Actualizar el embed original
+      if (embedOriginal) {
+        const rerollEmbed = EmbedBuilder.from(embedOriginal)
+          .setDescription(
+            embedOriginal.description.replace(/\*\*Ganador\(es\):\*\* (.*)/, `**Ganador(es):** ${nuevosGanadoresIds.map(id => `<@${id}>`).join(', ')}`)
+          )
+          .setFooter({ text: 'MonsterMania • Giveaway Rerolled' });
+        
+        await sorteoMsg.edit({ embeds: [rerollEmbed] }).catch(() => {});
+      }
+
+      console.log(`[Sorteo] Reroll por ${message.author.tag} - Nuevos ganadores IDs: ${nuevosGanadoresIds.join(', ')}`);
     } catch (err) {
       console.error('Error haciendo reroll:', err);
       await message.reply('❌ Error al hacer reroll. Verifica que el ID del mensaje sea correcto y que sea un sorteo válido.');
@@ -1436,9 +1365,203 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// Listener para los botones de tickets
+// Listener para los botones de tickets y sorteos
 client.on('interactionCreate', async (interaction) => {
+  // Handler para apertura de modal de sorteo
+  if (interaction.isButton() && interaction.customId === 'open_sorteo_modal') {
+    const modal = new ModalBuilder()
+      .setCustomId('create_giveaway_modal')
+      .setTitle('Configurar Nuevo Sorteo');
+
+    const durationInput = new TextInputBuilder()
+      .setCustomId('duration')
+      .setLabel('Duración (ej: 1m, 1h, 1d)')
+      .setPlaceholder('1m')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+
+    const winnersInput = new TextInputBuilder()
+      .setCustomId('winners')
+      .setLabel('Número de Ganadores')
+      .setPlaceholder('1')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+
+    const prizeInput = new TextInputBuilder()
+      .setCustomId('prize')
+      .setLabel('Premio')
+      .setPlaceholder('¿Qué estás sorteando?')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+
+    const descriptionInput = new TextInputBuilder()
+      .setCustomId('description')
+      .setLabel('Descripción')
+      .setPlaceholder('Detalles adicionales del sorteo...')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(false);
+
+    const requirementInput = new TextInputBuilder()
+      .setCustomId('requirement')
+      .setLabel('Requisitos (0=ninguno, 1-3=invitaciones)')
+      .setPlaceholder('0, 1, 2 o 3')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(durationInput),
+      new ActionRowBuilder().addComponents(winnersInput),
+      new ActionRowBuilder().addComponents(prizeInput),
+      new ActionRowBuilder().addComponents(descriptionInput),
+      new ActionRowBuilder().addComponents(requirementInput)
+    );
+
+    return interaction.showModal(modal);
+  }
+
+  // Handler para envío del modal de sorteo
+  if (interaction.isModalSubmit() && interaction.customId === 'create_giveaway_modal') {
+    const durationStr = interaction.fields.getTextInputValue('duration');
+    const winnersStr = interaction.fields.getTextInputValue('winners');
+    const prize = interaction.fields.getTextInputValue('prize');
+    const description = interaction.fields.getTextInputValue('description') || '';
+    const requirementStr = interaction.fields.getTextInputValue('requirement');
+
+    const winners = parseInt(winnersStr);
+    const requirement = parseInt(requirementStr);
+
+    if (isNaN(winners) || winners < 1) {
+      return interaction.reply({ content: '❌ Número de ganadores inválido.', ephemeral: true });
+    }
+
+    if (isNaN(requirement) || requirement < 0 || requirement > 3) {
+      return interaction.reply({ content: '❌ Los requisitos deben ser un número entre 0 y 3.', ephemeral: true });
+    }
+
+    // Parsear tiempo
+    const timeRegex = /^(\d+)([mhd])$/;
+    const match = durationStr.match(timeRegex);
+    if (!match) {
+      return interaction.reply({ content: '❌ Formato de tiempo inválido. Usa m, h o d.', ephemeral: true });
+    }
+
+    let milliseconds = parseInt(match[1]);
+    const unit = match[2];
+    if (unit === 'm') milliseconds *= 60000;
+    else if (unit === 'h') milliseconds *= 3600000;
+    else if (unit === 'd') milliseconds *= 86400000;
+
+    const endTime = Date.now() + milliseconds;
+    const endTimestamp = Math.floor(endTime / 1000);
+
+    let requisitosTexto = requirement > 0 ? `\n\n🔒 **Requisito:** Debes haber invitado al menos a **${requirement}** ${requirement === 1 ? 'amigo' : 'amigos'} al servidor.` : '';
+
+    const embed = new EmbedBuilder()
+      .setTitle('🎉 ¡SORTEO!')
+      .setDescription(
+        `**Premio:** ${prize}\n` +
+        (description ? `*${description}*\n\n` : '\n') +
+        `⏰ **Termina:** <t:${endTimestamp}:R>\n` +
+        `👤 **Ganadores:** ${winners}\n` +
+        `🎟️ **Participantes:** 0` +
+        requisitosTexto
+      )
+      .setColor('#00FF00')
+      .setFooter({ text: `MonsterMania • Giveaway • ${new Date().toLocaleTimeString()}` })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('participar_sorteo')
+        .setLabel('Participar')
+        .setEmoji('🎉')
+        .setStyle(ButtonStyle.Success)
+    );
+
+    try {
+      let sorteoChannel = interaction.channel;
+      if (SORTEOS_CHANNEL_ID) {
+        sorteoChannel = await interaction.guild.channels.fetch(SORTEOS_CHANNEL_ID);
+      }
+
+      let mencionContent = '@everyone';
+      if (MEMBER_ROLE_ID) {
+        mencionContent = `<@&${MEMBER_ROLE_ID}>`;
+      }
+
+      const sorteoMsg = await sorteoChannel.send({
+        content: `${mencionContent} 🎉 **¡NUEVO SORTEO!** 🎉`,
+        embeds: [embed],
+        components: [row]
+      });
+
+      activeSorteos.set(sorteoMsg.id, {
+        premio: prize,
+        ganadores: winners,
+        participantes: new Set(),
+        endTime,
+        channelId: sorteoChannel.id,
+        creatorId: interaction.user.id,
+        requisitoInvite: requirement
+      });
+      await saveSorteosData();
+
+      setTimeout(() => finalizarSorteo(sorteoMsg.id), milliseconds);
+
+      return interaction.reply({ content: `✅ Sorteo creado en <#${sorteoChannel.id}>!`, ephemeral: true });
+    } catch (err) {
+      console.error('Error al crear sorteo desde modal:', err);
+      return interaction.reply({ content: '❌ Error al crear el sorteo.', ephemeral: true });
+    }
+  }
+
   if (interaction.isButton()) {
+    // Handler para botón de participar en sorteo
+    if (interaction.customId === 'participar_sorteo') {
+      const sorteo = activeSorteos.get(interaction.message.id);
+      if (!sorteo) {
+        return interaction.reply({
+          content: '❌ Este sorteo ya ha finalizado o no es válido.',
+          ephemeral: true
+        });
+      }
+
+      if (sorteo.participantes.has(interaction.user.id)) {
+        return interaction.reply({
+          content: '❌ Ya estás participando en este sorteo.',
+          ephemeral: true
+        });
+      }
+
+      // Verificar requisito de invitaciones si existe
+      if (sorteo.requisitoInvite > 0) {
+        const userInvites = inviteCounts.get(interaction.user.id) || 0;
+        if (userInvites < sorteo.requisitoInvite) {
+          return interaction.reply({
+            content: `❌ Requisito no cumplido: Debes haber invitado al menos a **${sorteo.requisitoInvite}** ${sorteo.requisitoInvite === 1 ? 'persona' : 'personas'} al servidor para participar.`,
+            ephemeral: true
+          });
+        }
+      }
+
+      sorteo.participantes.add(interaction.user.id);
+      await saveSorteosData();
+
+      // Actualizar el contador de participantes en el embed
+      const currentEmbed = interaction.message.embeds[0];
+      const updatedEmbed = EmbedBuilder.from(currentEmbed)
+        .setDescription(
+          currentEmbed.description.replace(/🎟️ \*\*Participantes:\*\* \d+/, `🎟️ **Participantes:** ${sorteo.participantes.size}`)
+        );
+
+      await interaction.message.edit({ embeds: [updatedEmbed] });
+
+      return interaction.reply({
+        content: '✅ ¡Has entrado al sorteo exitosamente!',
+        ephemeral: true
+      });
+    }
+
     // Handler para botón de cerrar ticket
     if (interaction.customId === 'close_ticket') {
       const channel = interaction.channel;
@@ -1684,31 +1807,42 @@ function shuffleArray(array) {
   return array;
 }
 
-// Función para persistencia de sorteos
-const sorteosDataPath = path.join(process.cwd(), 'data', 'sorteos.json');
-function loadSorteosData() {
+// Función para persistencia de sorteos en Redis
+async function loadSorteosData() {
   try {
-    if (!fs.existsSync(sorteosDataPath)) return;
-    const raw = fs.readFileSync(sorteosDataPath, 'utf-8');
+    const raw = await redis.get('activeSorteos');
+    if (!raw) return;
+    
     const data = JSON.parse(raw);
     for (const [messageId, sorteo] of Object.entries(data)) {
       sorteo.participantes = new Set(sorteo.participantes || []);
       activeSorteos.set(messageId, sorteo);
     }
+    console.log(`[Sorteos] ${activeSorteos.size} sorteos cargados desde Redis.`);
   } catch (err) {
-    console.error('[Sorteos] Error cargando sorteos.json:', err);
+    console.error('[Sorteos] Error cargando sorteos desde Redis:', err);
   }
 }
-function saveSorteosData() {
+
+async function saveSorteosData() {
   try {
-    fs.mkdirSync(path.dirname(sorteosDataPath), { recursive: true });
+    // Limitar a los últimos 20 sorteos para no inflar Redis
+    let sortedEntries = Array.from(activeSorteos.entries());
+    if (sortedEntries.length > 20) {
+      const finalizados = sortedEntries.filter(([id, s]) => s.finalizado);
+      if (finalizados.length > 10) {
+        const toDelete = finalizados.slice(0, finalizados.length - 10);
+        toDelete.forEach(([id]) => activeSorteos.delete(id));
+      }
+    }
+
     const data = {};
     for (const [messageId, sorteo] of activeSorteos) {
       data[messageId] = { ...sorteo, participantes: Array.from(sorteo.participantes) };
     }
-    fs.writeFileSync(sorteosDataPath, JSON.stringify(data, null, 2), 'utf-8');
+    await redis.set('activeSorteos', JSON.stringify(data));
   } catch (err) {
-    console.error('[Sorteos] Error guardando sorteos.json:', err);
+    console.error('[Sorteos] Error guardando sorteos en Redis:', err);
   }
 }
 
@@ -1721,69 +1855,61 @@ async function finalizarSorteo(messageId) {
     const channel = await client.channels.fetch(sorteo.channelId);
     const message = await channel.messages.fetch(messageId);
 
-    // Obtener todos los usuarios que reaccionaron con 🎉 (excluyendo bots)
-    const reaction = message.reactions.cache.get('🎉');
-    if (!reaction) {
+    if (sorteo.participantes.size === 0) {
+      const emptyEmbed = new EmbedBuilder()
+        .setTitle('🎉 SORTEO FINALIZADO 🎉')
+        .setDescription(
+          `**Premio:** ${sorteo.premio}\n\n` +
+          `❌ El sorteo terminó sin participantes.`
+        )
+        .setColor('#FF0000')
+        .setTimestamp();
+
+      await message.edit({ embeds: [emptyEmbed], components: [] });
       await channel.send(`❌ El sorteo de **${sorteo.premio}** terminó sin participantes.`);
       activeSorteos.delete(messageId);
-      saveSorteosData();
+      await saveSorteosData();
       return;
     }
 
-    const users = await reaction.users.fetch();
-    let participantes = users.filter(u => !u.bot);
-
-    // Filtro adicional de requisitos por seguridad
-    if (sorteo.requisitoInvite) {
-      participantes = participantes.filter(u => (inviteCounts.get(u.id) || 0) >= 1);
-    }
-
-    if (participantes.size === 0) {
-      await channel.send(`❌ El sorteo de **${sorteo.premio}** terminó sin participantes válidos.`);
-      activeSorteos.delete(messageId);
-      saveSorteosData();
-      return;
-    }
-
-    // Seleccionar ganadores aleatorios con shuffle
-    let participantesArray = Array.from(participantes.values());
+    // Seleccionar ganadores aleatorios
+    let participantesArray = Array.from(sorteo.participantes);
     participantesArray = shuffleArray(participantesArray);
     const numGanadores = Math.min(sorteo.ganadores, participantesArray.length);
-    const ganadores = participantesArray.slice(0, numGanadores);
+    const ganadoresIds = participantesArray.slice(0, numGanadores);
 
     // Actualizar embed del sorteo a finalizado
     const endedEmbed = new EmbedBuilder()
       .setTitle('🎉 SORTEO FINALIZADO 🎉')
       .setDescription(
         `**Premio:** ${sorteo.premio}\n\n` +
-        `**Ganador(es):** ${ganadores.map(g => `<@${g.id}>`).join(', ')}\n\n` +
-        `**Participantes:** ${participantes.size}`
+        `**Ganador(es):** ${ganadoresIds.map(id => `<@${id}>`).join(', ')}\n\n` +
+        `**Participantes:** ${sorteo.participantes.size}`
       )
       .setColor('#FFD700')
+      .setFooter({ text: 'MonsterMania • Giveaway Ended' })
       .setTimestamp();
 
-    await message.edit({ embeds: [endedEmbed] });
+    await message.edit({ embeds: [endedEmbed], components: [] });
 
     // Anunciar ganadores
     await channel.send(
       `🎊 **¡SORTEO TERMINADO!** 🎊\n\n` +
-      `**${ganadores.map(g => `<@${g.id}>`).join(', ')}** ${ganadores.length > 1 ? 'han' : 'ha'} ganado: **${sorteo.premio}**!\n\n` +
+      `**${ganadoresIds.map(id => `<@${id}>`).join(', ')}** ${ganadoresIds.length > 1 ? 'han' : 'ha'} ganado: **${sorteo.premio}**!\n\n` +
       `¡Felicidades! 🎉`
     );
 
-    console.log(`[Sorteo] Finalizado: ${sorteo.premio} - Ganadores: ${ganadores.map(g => g.tag).join(', ')}`);
-    activeSorteos.delete(messageId);
-    saveSorteosData();
+    console.log(`[Sorteo] Finalizado: ${sorteo.premio} - Ganadores IDs: ${ganadoresIds.join(', ')}`);
+    activeSorteos.set(messageId, { ...sorteo, finalizado: true, ganadoresIds }); 
+    await saveSorteosData();
   } catch (err) {
     if (err.code === 10008) {
       console.log(`[Sorteo] Mensaje eliminado, limpiando sorteo: ${sorteo.premio}`);
       activeSorteos.delete(messageId);
-      saveSorteosData();
-      return;
+      await saveSorteosData();
+    } else {
+      console.error('Error al finalizar sorteo:', err);
     }
-    console.error('Error finalizando sorteo:', err);
-    activeSorteos.delete(messageId);
-    saveSorteosData();
   }
 }
 
@@ -1827,7 +1953,7 @@ client.on('messageReactionAdd', async (reaction, user) => {
 
     if (sorteo) {
       sorteo.participantes.add(user.id);
-      saveSorteosData();
+      await saveSorteosData();
       console.log(`[Sorteo] ${user.tag} participó en: ${sorteo.premio}`);
     }
   }
@@ -1851,7 +1977,7 @@ client.on('messageReactionRemove', async (reaction, user) => {
     const sorteo = activeSorteos.get(reaction.message.id);
     if (sorteo) {
       sorteo.participantes.delete(user.id);
-      saveSorteosData();
+      await saveSorteosData();
       console.log(`[Sorteo] ${user.tag} se retiró de: ${sorteo.premio}`);
     }
   }
