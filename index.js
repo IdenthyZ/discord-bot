@@ -1,6 +1,3 @@
-const MOD_LOGS_CHANNEL_ID = process.env.MOD_LOGS_CHANNEL_ID;
-const AUDIT_LOG_CHANNEL_ID = process.env.AUDIT_LOG_CHANNEL_ID || MOD_LOGS_CHANNEL_ID;
-
 import {
   Client,
   GatewayIntentBits,
@@ -30,14 +27,13 @@ import {
 import { Readable } from 'node:stream';
 import fs from 'node:fs';
 import path from 'node:path';
-import https from 'https';
 import axios from 'axios';
 import ffmpegStatic from 'ffmpeg-static';
 import Redis from 'ioredis';
 import http from 'node:http';
 import { execSync } from 'node:child_process';
 
-// 📡 Servidor de Salud (Prioridad Máxima para Railway)
+// 📡 Servidor de Salud (Iniciado de inmediato para Railway)
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -46,39 +42,35 @@ http.createServer((req, res) => {
   console.log(`📡 [HealthCheck] Servidor activo en puerto ${PORT}`);
 });
 
+// 🗄 Configuración de Redis con soporte TLS para Railway
+const redisUrl = process.env.REDIS_URL;
+let redis = null;
+if (redisUrl) {
+  const redisOptions = redisUrl.startsWith('rediss://') 
+    ? { redisOptions: { tls: { rejectUnauthorized: false } } }
+    : {};
+  redis = new Redis(redisUrl, {
+    maxRetriesPerRequest: 5,
+    retryStrategy: (times) => Math.min(times * 100, 3000),
+    ...redisOptions
+  });
+  
+  redis.on('connect', () => console.log('✅ [Redis] Conectado exitosamente'));
+  redis.on('error', (err) => console.error('❌ [Redis] Error:', err.message));
+}
+
 // 🛠 Configuración FFmpeg
 let ffmpegBin = ffmpegStatic;
 if (process.platform !== 'win32') {
   try {
     const systemFfmpeg = execSync('which ffmpeg').toString().trim();
-    if (systemFfmpeg) {
-      ffmpegBin = systemFfmpeg;
-      const version = execSync(`${ffmpegBin} -version`).toString().split('\n')[0];
-      console.log(`✅ [FFmpeg] Sistema detectado: ${version}`);
-    }
-  } catch (e) {
-    console.log('⚠️ [FFmpeg] Usando binario estático (no se detectó en el sistema)');
-  }
-} else {
-  const winPath = 'C:\\ffmpeg\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe';
-  if (fs.existsSync(winPath)) ffmpegBin = winPath;
+    if (systemFfmpeg) ffmpegBin = systemFfmpeg;
+  } catch (e) {}
 }
 process.env.FFMPEG_PATH = ffmpegBin;
 process.env.PRISM_MEDIA_FFMPEG_PATH = ffmpegBin;
 
-// 🗄 Redis
-const redisUrl = process.env.REDIS_URL;
-const redis = redisUrl ? new Redis(redisUrl, {
-  maxRetriesPerRequest: 3,
-  retryStrategy: (times) => Math.min(times * 50, 2000)
-}) : null;
-
-if (redis) {
-  redis.on('connect', () => console.log('✅ [Redis] Conectado exitosamente'));
-  redis.on('error', (err) => console.error('❌ [Redis] Error:', err.message));
-}
-
-// 🤖 Cliente Discord
+// 🤖 Variables de Entorno
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
@@ -88,13 +80,7 @@ const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID;
 const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID;
 const SORTEOS_CHANNEL_ID = process.env.SORTEOS_CHANNEL_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
-const TICKET_LOGS_CHANNEL_ID = process.env.TICKET_LOGS_CHANNEL_ID;
 const TICKET_ADMIN_ROLE_ID = process.env.TICKET_ADMIN_ROLE_ID || '1442336261464658096';
-
-const INVITES_CHANNEL_ID = process.env.INVITES_CHANNEL_ID || '1472089754332958851';
-const ALLYS_CHANNEL_ID = process.env.ALLYS_CHANNEL_ID || '1472827620209987664';
-const MEMBER_COUNT_CATEGORY_NAME = process.env.MEMBER_COUNT_CATEGORY_NAME || '📈 • Contador';
-const MEMBER_COUNT_CHANNEL_TEMPLATE = '🧑‍🤝‍🧑 Total: {count}';
 
 if (!TOKEN || !GUILD_ID || !VOICE_CHANNEL_ID) {
   console.error('❌ Faltan variables críticas: DISCORD_TOKEN, GUILD_ID, VOICE_CHANNEL_ID');
@@ -125,94 +111,64 @@ const memberInviters = new Map();
 const invitesCache = new Map();
 
 // --- LÓGICA DE PERSISTENCIA ---
-async function loadInvitesData() {
+async function loadData() {
   try {
-    let raw;
-    if (redis) raw = await redis.get('bot:invites');
-    if (!raw) {
-      const p = path.join(process.cwd(), 'data', 'invites.json');
-      if (fs.existsSync(p)) raw = fs.readFileSync(p, 'utf-8');
-    }
-    if (raw) {
-      const data = JSON.parse(raw);
+    let rawInv;
+    if (redis) rawInv = await redis.get('bot:invites');
+    if (!rawInv && fs.existsSync('data/invites.json')) rawInv = fs.readFileSync('data/invites.json', 'utf-8');
+    if (rawInv) {
+      const data = JSON.parse(rawInv);
       if (data.counts) Object.entries(data.counts).forEach(([id, c]) => inviteCounts.set(id, Number(c)));
       if (data.members) Object.entries(data.members).forEach(([id, inv]) => memberInviters.set(id, inv));
-      console.log('✅ [Invites] Datos cargados');
     }
-  } catch (err) { console.error('❌ [Invites] Error al cargar:', err.message); }
-}
 
-async function saveInvitesData() {
-  try {
-    const data = JSON.stringify({ counts: Object.fromEntries(inviteCounts), members: Object.fromEntries(memberInviters) });
-    if (redis) await redis.set('bot:invites', data);
-    else {
-      const p = path.join(process.cwd(), 'data', 'invites.json');
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(p, data);
-    }
-  } catch (err) { console.error('❌ [Invites] Error al guardar:', err.message); }
-}
-
-async function loadSorteosData() {
-  try {
-    let raw;
-    if (redis) raw = await redis.get('bot:sorteos');
-    if (!raw) {
-      const p = path.join(process.cwd(), 'data', 'sorteos.json');
-      if (fs.existsSync(p)) raw = fs.readFileSync(p, 'utf-8');
-    }
-    if (raw) {
-      const data = JSON.parse(raw);
+    let rawSor;
+    if (redis) rawSor = await redis.get('bot:sorteos');
+    if (!rawSor && fs.existsSync('data/sorteos.json')) rawSor = fs.readFileSync('data/sorteos.json', 'utf-8');
+    if (rawSor) {
+      const data = JSON.parse(rawSor);
       Object.entries(data).forEach(([id, s]) => {
         s.participantes = new Set(s.participantes || []);
         activeSorteos.set(id, s);
       });
-      console.log(`✅ [Sorteos] ${activeSorteos.size} cargados`);
     }
-  } catch (err) { console.error('❌ [Sorteos] Error al cargar:', err.message); }
+    console.log('✅ [Datos] Cargados correctamente');
+  } catch (err) { console.error('❌ [Datos] Error:', err.message); }
 }
 
-async function saveSorteosData() {
+async function saveData() {
   try {
-    const obj = {};
-    activeSorteos.forEach((s, id) => { obj[id] = { ...s, participantes: Array.from(s.participantes) }; });
-    const data = JSON.stringify(obj);
-    if (redis) await redis.set('bot:sorteos', data);
-    else {
-      const p = path.join(process.cwd(), 'data', 'sorteos.json');
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(p, data);
+    const invData = JSON.stringify({ counts: Object.fromEntries(inviteCounts), members: Object.fromEntries(memberInviters) });
+    const sorData = JSON.stringify(Object.fromEntries(Array.from(activeSorteos.entries()).map(([id, s]) => [id, { ...s, participantes: Array.from(s.participantes) }])));
+    
+    if (redis) {
+      await redis.set('bot:invites', invData);
+      await redis.set('bot:sorteos', sorData);
+    } else {
+      if (!fs.existsSync('data')) fs.mkdirSync('data');
+      fs.writeFileSync('data/invites.json', invData);
+      fs.writeFileSync('data/sorteos.json', sorData);
     }
-  } catch (err) { console.error('❌ [Sorteos] Error al guardar:', err.message); }
+  } catch (err) { console.error('❌ [Datos] Error al guardar:', err.message); }
 }
 
 // --- RADIO ---
 const STREAM_URL = 'https://stream.maxiradio.mx:1033/live';
-let isConnecting = false;
-
 async function startRadio() {
-  if (isConnecting) return;
-  isConnecting = true;
   try {
-    console.log('📻 [Radio] Intentando conectar al stream...');
     const res = await axios.get(STREAM_URL, { responseType: 'stream', timeout: 15000 });
     const { stream, type } = await demuxProbe(res.data);
     player.play(createAudioResource(stream, { inputType: type }));
-    console.log('✅ [Radio] Reproduciendo');
+    console.log('📻 [Radio] Reproduciendo');
   } catch (err) {
     console.error('❌ [Radio] Error:', err.message);
-    setTimeout(startRadio, 15000);
-  } finally { isConnecting = false; }
+    setTimeout(startRadio, 10000);
+  }
 }
 
-player.on(AudioPlayerStatus.Idle, () => {
-  console.log('📻 [Radio] Idle - Reiniciando...');
-  startRadio();
-});
-
+player.on(AudioPlayerStatus.Idle, startRadio);
 player.on('error', (err) => {
-  console.error('❌ [Radio] Player Error:', err.message);
+  console.error('❌ [Radio] Error:', err.message);
   setTimeout(startRadio, 5000);
 });
 
@@ -225,101 +181,124 @@ async function joinAndStay() {
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: true
     });
-    
-    connection.on(VoiceConnectionStatus.Disconnected, async () => {
-      try {
-        await Promise.race([
-          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
-          entersState(connection, VoiceConnectionStatus.Connecting, 5000),
-        ]);
-      } catch (e) {
-        console.log('🔇 [Voz] Reconectando...');
-        connection.destroy();
-        joinAndStay();
-      }
-    });
-
     connection.subscribe(player);
-    console.log('✅ [Voz] Conectado al canal');
+    console.log('✅ [Voz] Conectado');
   } catch (err) {
     console.error('❌ [Voz] Error:', err.message);
     setTimeout(joinAndStay, 20000);
   }
 }
 
-// --- INICIO ---
+// --- EVENTOS PRINCIPALES ---
 client.once(Events.ClientReady, async () => {
   console.log(`🚀 [Bot] Online como ${client.user.tag}`);
-  
-  // Carga de datos en segundo plano para no bloquear
-  Promise.all([loadInvitesData(), loadSorteosData()]).then(() => {
-    activeSorteos.forEach((s, id) => {
-      const remaining = s.endTime - Date.now();
-      if (remaining > 0) setTimeout(() => finalizarSorteo(id), remaining);
-      else finalizarSorteo(id);
-    });
-  });
-
+  await loadData();
   joinAndStay();
   startRadio();
 
-  // Cache de invitaciones
-  client.guilds.fetch(GUILD_ID).then(g => g.invites.fetch()).then(invs => {
+  activeSorteos.forEach((s, id) => {
+    const remaining = s.endTime - Date.now();
+    setTimeout(() => finalizarSorteo(id), Math.max(remaining, 1000));
+  });
+
+  const g = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (g) {
+    const invs = await g.invites.fetch().catch(() => []);
     invs.forEach(i => invitesCache.set(i.code, i.uses || 0));
-    console.log('✅ [Invites] Cache inicializado');
-  }).catch(() => {});
+  }
 });
 
-// --- EVENTOS ---
-client.on('guildMemberAdd', async (m) => {
-  try {
-    const newInvites = await m.guild.invites.fetch();
-    const used = newInvites.find(i => (i.uses || 0) > (invitesCache.get(i.code) || 0));
-    newInvites.forEach(i => invitesCache.set(i.code, i.uses || 0));
+client.on('messageCreate', async (msg) => {
+  if (msg.author.bot || !msg.guild) return;
+  if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
 
-    if (used && used.inviter) {
-      const count = (inviteCounts.get(used.inviter.id) || 0) + 1;
-      inviteCounts.set(used.inviter.id, count);
-      memberInviters.set(m.id, used.inviter.id);
-      saveInvitesData();
-    }
+  if (msg.content === '!setup-ticket') {
+    const emb = new EmbedBuilder().setTitle('Sistema de Tickets').setDescription('Pulsa el botón de abajo para abrir un ticket de soporte.').setColor('#ff9cbf');
+    const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('Abrir Ticket').setStyle(ButtonStyle.Primary).setEmoji('📩'));
+    msg.channel.send({ embeds: [emb], components: [btn] });
+  }
 
-    if (WELCOME_CHANNEL_ID) {
-      const ch = await m.guild.channels.fetch(WELCOME_CHANNEL_ID).catch(() => null);
-      if (ch) {
-        const emb = new EmbedBuilder()
-          .setTitle(`${m.user.username} ¡Bienvenido! 🎉`)
-          .setDescription(`Tickets: <#${TICKET_CHANNEL_ID}>\nChat: <#${CHAT_CHANNEL_ID}>\nSorteos: <#${SORTEOS_CHANNEL_ID}>`)
-          .setThumbnail(m.user.displayAvatarURL())
-          .setColor('#ff9cbf')
-          .setFooter({ text: `${m.guild.name}` });
-        ch.send({ embeds: [emb] });
-      }
-    }
-    if (MEMBER_ROLE_ID) m.roles.add(MEMBER_ROLE_ID).catch(() => {});
-  } catch {}
+  if (msg.content === '!sorteo') {
+    const emb = new EmbedBuilder().setTitle('Gestión de Sorteos').setDescription('Pulsa el botón para configurar un nuevo sorteo.').setColor('#00FF00');
+    const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('open_sorteo_modal').setLabel('Crear Sorteo').setStyle(ButtonStyle.Success).setEmoji('🎉'));
+    msg.channel.send({ embeds: [emb], components: [btn] });
+  }
 });
 
-// (Resto de la lógica de tickets/sorteos se mantiene igual pero simplificada para estabilidad)
 client.on('interactionCreate', async (i) => {
   if (i.isButton()) {
+    if (i.customId === 'create_ticket') {
+      const modal = new ModalBuilder().setCustomId('ticket_modal').setTitle('Motivo del Soporte');
+      modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Explica brevemente tu problema').setStyle(TextInputStyle.Paragraph).setRequired(true)));
+      return i.showModal(modal);
+    }
+    if (i.customId === 'open_sorteo_modal') {
+      const modal = new ModalBuilder().setCustomId('sorteo_modal').setTitle('Configurar Nuevo Sorteo');
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('dur').setLabel('Duración (ej: 10m, 1h, 1d)').setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('win').setLabel('Número de Ganadores').setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('prz').setLabel('Premio').setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('req').setLabel('Invitaciones Necesarias (0-3)').setStyle(TextInputStyle.Short).setRequired(true))
+      );
+      return i.showModal(modal);
+    }
     if (i.customId === 'participar_sorteo') {
       const s = activeSorteos.get(i.message.id);
-      if (!s) return i.reply({ content: '❌ Sorteo no activo.', ephemeral: true });
+      if (!s) return i.reply({ content: '❌ Este sorteo ya no está activo.', ephemeral: true });
       if (s.participantes.has(i.user.id)) {
         s.participantes.delete(i.user.id);
-        i.reply({ content: 'Has salido del sorteo.', ephemeral: true });
+        i.reply({ content: 'Has cancelado tu participación.', ephemeral: true });
       } else {
         const req = s.requisitoInvite || 0;
-        if ((inviteCounts.get(i.user.id) || 0) < req) return i.reply({ content: `❌ Necesitas ${req} invitaciones.`, ephemeral: true });
+        if ((inviteCounts.get(i.user.id) || 0) < req) return i.reply({ content: `❌ Necesitas al menos ${req} invitaciones para participar.`, ephemeral: true });
         s.participantes.add(i.user.id);
-        i.reply({ content: '¡Estás participando! 🎉', ephemeral: true });
+        i.reply({ content: '¡Ya estás participando en el sorteo! 🎉', ephemeral: true });
       }
-      saveSorteosData();
+      saveData();
+      const emb = EmbedBuilder.from(i.message.embeds[0]).setFields({ name: 'Participantes', value: `${s.participantes.size}`, inline: true });
+      i.message.edit({ embeds: [emb] });
+    }
+  }
+
+  if (i.isModalSubmit()) {
+    if (i.customId === 'ticket_modal') {
+      await i.deferReply({ ephemeral: true });
       try {
-        const emb = EmbedBuilder.from(i.message.embeds[0]).setFields({ name: 'Participantes', value: `${s.participantes.size}`, inline: true });
-        i.message.edit({ embeds: [emb] });
-      } catch {}
+        const ch = await i.guild.channels.create({
+          name: `ticket-${i.user.username}`,
+          parent: TICKET_CATEGORY_ID,
+          permissionOverwrites: [
+            { id: i.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+            { id: i.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+            { id: TICKET_ADMIN_ROLE_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
+          ]
+        });
+        const emb = new EmbedBuilder().setTitle('Ticket de Soporte').setDescription(`**Usuario:** ${i.user}\n**Motivo:** ${i.fields.getTextInputValue('motivo')}`).setColor('#ff9cbf').setTimestamp();
+        ch.send({ content: `${i.user} | <@&${TICKET_ADMIN_ROLE_ID}>`, embeds: [emb] });
+        i.editReply({ content: `Ticket creado exitosamente: ${ch}` });
+      } catch (err) {
+        i.editReply({ content: '❌ Error al crear el ticket. Verifica los permisos del bot.' });
+      }
+    }
+    if (i.customId === 'sorteo_modal') {
+      const dur = i.fields.getTextInputValue('dur'), win = parseInt(i.fields.getTextInputValue('win')), prz = i.fields.getTextInputValue('prz'), req = parseInt(i.fields.getTextInputValue('req'));
+      const match = dur.match(/^(\d+)([mhd])$/);
+      if (!match) return i.reply({ content: 'Formato de tiempo inválido (ej: 10m, 1h, 1d)', ephemeral: true });
+      
+      let ms = parseInt(match[1]) * 60000;
+      if (match[2] === 'h') ms *= 60; if (match[2] === 'd') ms *= 24;
+      const endTime = Date.now() + ms;
+      
+      const emb = new EmbedBuilder().setTitle('🎉 ¡NUEVO SORTEO!').setDescription(`**Premio:** ${prz}\n**Ganadores:** ${win}\n**Requisito:** ${req} invitaciones\n**Termina:** <t:${Math.floor(endTime/1000)}:R>`).addFields({ name: 'Participantes', value: '0', inline: true }).setColor('#00FF00').setTimestamp();
+      const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('participar_sorteo').setLabel('Participar').setStyle(ButtonStyle.Success).setEmoji('🎉'));
+      
+      const ch = SORTEOS_CHANNEL_ID ? await i.guild.channels.fetch(SORTEOS_CHANNEL_ID) : i.channel;
+      const msg = await ch.send({ content: '@everyone', embeds: [emb], components: [btn] });
+      
+      activeSorteos.set(msg.id, { premio: prz, ganadores: win, endTime, channelId: ch.id, requisitoInvite: req, participantes: new Set() });
+      saveData();
+      setTimeout(() => finalizarSorteo(msg.id), ms);
+      i.reply({ content: 'Sorteo publicado correctamente.', ephemeral: true });
     }
   }
 });
@@ -330,12 +309,33 @@ async function finalizarSorteo(id) {
     const ch = await client.channels.fetch(s.channelId);
     const msg = await ch.messages.fetch(id);
     const winners = Array.from(s.participantes).sort(() => 0.5 - Math.random()).slice(0, s.ganadores);
-    const emb = EmbedBuilder.from(msg.embeds[0]).setTitle('🎉 SORTEO FINALIZADO').setDescription(`**Premio:** ${s.premio}\n**Ganadores:** ${winners.map(w => `<@${w}>`).join(', ') || 'Nadie'}`);
+    const emb = EmbedBuilder.from(msg.embeds[0]).setTitle('🎉 SORTEO FINALIZADO').setDescription(`**Premio:** ${s.premio}\n**Ganadores:** ${winners.map(w => `<@${w}>`).join(', ') || 'Nadie'}`).setColor('#FF0000');
     await msg.edit({ embeds: [emb], components: [] });
-    if (winners.length) ch.send(`🎊 ¡Felicidades ${winners.map(w => `<@${w}>`).join(', ')}! Ganaste **${s.premio}**.`);
+    if (winners.length) ch.send(`🎊 ¡Felicidades ${winners.map(w => `<@${w}>`).join(', ')}! Has ganado **${s.premio}**.`);
   } catch {}
-  activeSorteos.delete(id); saveSorteosData();
+  activeSorteos.delete(id); saveData();
 }
+
+client.on('guildMemberAdd', async (m) => {
+  const invs = await m.guild.invites.fetch().catch(() => []);
+  const used = invs.find(i => (i.uses || 0) > (invitesCache.get(i.code) || 0));
+  invs.forEach(i => invitesCache.set(i.code, i.uses || 0));
+
+  if (used && used.inviter) {
+    inviteCounts.set(used.inviter.id, (inviteCounts.get(used.inviter.id) || 0) + 1);
+    memberInviters.set(m.id, used.inviter.id);
+    saveData();
+  }
+
+  if (WELCOME_CHANNEL_ID) {
+    const ch = await m.guild.channels.fetch(WELCOME_CHANNEL_ID).catch(() => null);
+    if (ch) {
+      const emb = new EmbedBuilder().setTitle(`¡Bienvenido/a ${m.user.username}!`).setDescription(`Disfruta de tu estancia en **${m.guild.name}**`).setColor('#ff9cbf').setThumbnail(m.user.displayAvatarURL());
+      ch.send({ embeds: [emb] });
+    }
+  }
+  if (MEMBER_ROLE_ID) m.roles.add(MEMBER_ROLE_ID).catch(() => {});
+});
 
 process.on('unhandledRejection', (r) => console.error('🔴 Rejection:', r));
 process.on('uncaughtException', (e) => console.error('🔴 Exception:', e));
