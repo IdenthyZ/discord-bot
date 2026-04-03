@@ -518,19 +518,28 @@ async function joinAndStay() {
 }
 
 client.on(Events.ClientReady, async () => {
-  console.log(`Conectado como ${client.user.tag}`);
-  await loadInvitesData();
-  await loadSorteosData();
+  console.log(`✅ [Bot] Conectado como ${client.user.tag}`);
+  console.log('[Bot] Cargando datos...');
+  try {
+    await loadInvitesData();
+    console.log('✅ [Bot] Datos de invitaciones cargados');
+    await loadSorteosData();
+    console.log('✅ [Bot] Datos de sorteos cargados');
+  } catch (err) {
+    console.error('❌ Error al cargar datos locales:', err.message);
+  }
   
   // Intentar unir al bot al canal de voz al iniciar
   try {
     console.log('[Voice] Intentando unión inicial...');
     await joinAndStay();
+    console.log('✅ [Voice] Unido al canal de voz');
   } catch (err) {
     console.error('[Voice] No se pudo unir al canal de voz al inicio:', err.message);
   }
 
   // Restaurar sorteos pendientes
+  console.log('[Sorteos] Restaurando sorteos activos...');
   for (const [messageId, sorteo] of activeSorteos) {
     if (sorteo.finalizado) continue;
     
@@ -2528,4 +2537,12 @@ client.on('messageDeleteBulk', async (messages) => {
   }
 });
 
-client.login(TOKEN);
+if (!TOKEN) {
+  console.error('❌ ERROR CRÍTICO: El TOKEN de Discord no está definido en las variables de entorno.');
+  process.exit(1);
+}
+
+console.log('🚀 Iniciando conexión con Discord...');
+client.login(TOKEN).catch(err => {
+  console.error('❌ ERROR AL INICIAR SESIÓN:', err);
+});
