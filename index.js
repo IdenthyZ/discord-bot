@@ -463,20 +463,34 @@ async function joinAndStay() {
     selfMute: false,
   });
 
-  // En Railway, entersState suele fallar por el networking de contenedores.
-  // Simplemente nos unimos y dejamos que @discordjs/voice maneje la reconexión.
+  // Aumentar el límite de listeners para evitar warnings por reconexiones
+  connection.setMaxListeners(25);
+
   console.log(`[Voice] Intentando conectar al canal: ${channel.name}...`);
 
   connection.subscribe(player);
 
+  // Evitar duplicar nuestros propios listeners si la conexión ya los tiene
+  if (connection._hasMyListeners) {
+    return connection;
+  }
+  connection._hasMyListeners = true;
+
+  connection.on('error', (error) => {
+    if (!error.message?.includes('Cannot perform IP discovery')) {
+      console.error('[VoiceConnection] Error crítico en la conexión:', error.message);
+    }
+  });
+
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
     try {
+      // Usamos Promise.race con entersState para intentar reconectar
       await Promise.race([
-        entersState(connection, VoiceConnectionStatus.Signalling, 10_000),
-        entersState(connection, VoiceConnectionStatus.Connecting, 10_000),
+        entersState(connection, VoiceConnectionStatus.Signalling, 15_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 15_000),
       ]);
     } catch (err) {
-      // Ignorar errores de IP discovery que son muy comunes y se recuperan solos
+      // Ignorar errores de IP discovery que son comunes
       if (err.message && err.message.includes('Cannot perform IP discovery')) {
         console.warn('[VoiceConnection] Problema de découverte IP (normal), reintentando...');
       } else {
@@ -485,23 +499,18 @@ async function joinAndStay() {
       
       try {
         if (connection.state.status !== VoiceConnectionStatus.Destroyed) {
+          // Antes de destruir, quitamos listeners para limpieza
+          connection.removeAllListeners();
           connection.destroy();
         }
       } catch {}
       
-      // Reintento más tolerante ante fallos de conexión
+      // Reintento tras 5 segundos
       setTimeout(() => {
         joinAndStay().catch((joinErr) => {
           console.error('[VoiceConnection] Error al reintentar unión:', joinErr.message);
         });
       }, 5_000);
-    }
-  });
-
-  connection.on('error', (err) => {
-    // Solo loguear errores que no sean de IP discovery
-    if (!err.message?.includes('Cannot perform IP discovery')) {
-      console.error('[VoiceConnectionError]', err.message);
     }
   });
 
@@ -880,6 +889,12 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
+    // Verificar si el bot puede gestionar a este miembro
+    if (!member.manageable) {
+      await message.reply('❌ No puedo mutear a este usuario. Asegúrate de que mi rol esté por encima del suyo en la jerarquía de roles y que tenga el permiso de "Moderate Members".');
+      return;
+    }
+
     const timeStr = args[2];
     const reason = args.slice(3).join(' ') || 'Sin razón especificada';
 
@@ -944,6 +959,12 @@ client.on('messageCreate', async (message) => {
     const member = message.mentions.members.first();
     if (!member) {
       await message.reply('❌ Debes mencionar a un usuario válido.\nUso: `!unmute @usuario`');
+      return;
+    }
+
+    // Verificar si el bot puede gestionar a este miembro
+    if (!member.manageable) {
+      await message.reply('❌ No puedo desmutear a este usuario. Asegúrate de que mi rol esté por encima del suyo en la jerarquía de roles.');
       return;
     }
 
@@ -1062,10 +1083,13 @@ client.on('messageCreate', async (message) => {
     // Guardar log del ticket
     await saveTicketLog(message.channel, message.author);
 
+    const channelName = message.channel.name;
+    const authorTag = message.author.tag;
+
     setTimeout(async () => {
       try {
         await message.channel.delete();
-        console.log(`[Tickets] Ticket ${message.channel.name} cerrado por ${message.author.tag}`);
+        console.log(`[Tickets] Ticket ${channelName} cerrado por ${authorTag}`);
       } catch (err) {
         console.error('Error al cerrar ticket:', err);
       }
@@ -1356,6 +1380,12 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
+    // Verificar si el bot puede gestionar a este miembro
+    if (!member.manageable) {
+      await message.reply('❌ No puedo expulsar a este usuario. Asegúrate de que mi rol esté por encima del suyo en la jerarquía de roles.');
+      return;
+    }
+
     try {
       await member.kick(reason);
       const reply = await message.reply(`✅ ${member.user.tag} ha sido expulsado.\n**Razón:** ${reason}`);
@@ -1397,6 +1427,12 @@ client.on('messageCreate', async (message) => {
 
     if (member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       await message.reply('❌ No puedes banear a un administrador.');
+      return;
+    }
+
+    // Verificar si el bot puede gestionar a este miembro
+    if (!member.manageable) {
+      await message.reply('❌ No puedo banear a este usuario. Asegúrate de que mi rol esté por encima del suyo en la jerarquía de roles.');
       return;
     }
 
