@@ -747,6 +747,8 @@ client.on('messageCreate', async (message) => {
               { name: '🚫 !cancelar-sorteo <ID>', value: 'Cancela un sorteo activo.' },
               { name: '🔄 !reroll-sorteo <ID>', value: 'Elige nuevos ganadores para un sorteo.' },
               { name: '📋 !sorteos-activos', value: 'Lista los sorteos activos.' },
+              { name: '📊 !invites [@usuario]', value: 'Muestra las invitaciones de un usuario.' },
+              { name: '🔄 !reset-invites', value: 'Reinicia toda la base de datos de invitaciones.' },
               { name: '👢 !kick <usuario> <razón>', value: 'Expulsa a un usuario.' },
               { name: '🔨 !ban <usuario> <razón>', value: 'Banea a un usuario.' }
             )
@@ -1125,6 +1127,37 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
+  // Comando !reset-invites (reiniciar base de datos de invitaciones)
+  if (message.content.startsWith('!reset-invites')) {
+    // Verificar que el usuario sea administrador
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.delete().catch(() => {});
+      const reply = await message.reply('❌ Solo los administradores pueden reiniciar las invitaciones.');
+      setTimeout(() => {
+        reply.delete().catch(() => {});
+      }, 3000);
+      return;
+    }
+
+    // Confirmación para evitar borrados accidentales
+    if (!message.content.includes('--confirm')) {
+      return message.reply('⚠️ **¡ADVERTENCIA!** Esto borrará TODA la base de datos de invitaciones y todos empezarán de 0.\nPara confirmar, usa: `!reset-invites --confirm`');
+    }
+
+    try {
+      inviteCounts.clear();
+      memberInviters.clear();
+      await saveInvitesData();
+      
+      await message.reply('✅ Base de datos de invitaciones reiniciada exitosamente. Todos los contadores han vuelto a 0.');
+      console.log(`[Invites] Base de datos reiniciada por ${message.author.tag}`);
+    } catch (err) {
+      console.error('Error al reiniciar invitaciones:', err);
+      await message.reply('❌ Hubo un error al reiniciar la base de datos de invitaciones.');
+    }
+    return;
+  }
+
   // Comando !sorteo (abrir panel de creación)
   if (message.content.startsWith('!sorteo')) {
     // Verificar que el usuario sea administrador
@@ -1313,6 +1346,72 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // Comando !cancelar-sorteo (cancelar un sorteo activo)
+  if (message.content.startsWith('!cancelar-sorteo') || message.content.startsWith('!cancelar-sorteos')) {
+    // Verificar que el usuario sea administrador
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.delete().catch(() => {});
+      const reply = await message.reply('❌ Solo los administradores pueden cancelar sorteos.');
+      setTimeout(() => {
+        reply.delete().catch(() => {});
+      }, 3000);
+      return;
+    }
+
+    const args = message.content.split(/\s+/);
+    if (args.length < 2) {
+      await message.reply('❌ Uso correcto: `!cancelar-sorteo <ID del mensaje>`\nEjemplo: `!cancelar-sorteo 1234567890123456789`');
+      return;
+    }
+
+    const messageId = args[1];
+    const sorteo = activeSorteos.get(messageId);
+
+    if (!sorteo) {
+      return message.reply('❌ No se encontró ningún sorteo activo con ese ID. Usa `!sorteos-activos` para ver la lista.');
+    }
+
+    try {
+      activeSorteos.delete(messageId);
+      await saveSorteosData();
+
+      // Intentar editar el mensaje original para indicar que fue cancelado
+      try {
+        // El canal puede estar en el sorteo almacenado o buscamos en el canal de sorteos
+        let channel = message.guild.channels.cache.get(sorteo.channelId);
+        if (!channel) {
+          channel = await message.guild.channels.fetch(sorteo.channelId).catch(() => null);
+        }
+
+        if (channel) {
+          const sorteoMsg = await channel.messages.fetch(messageId).catch(() => null);
+          if (sorteoMsg) {
+            const embed = sorteoMsg.embeds[0];
+            if (embed) {
+              const cancelledEmbed = EmbedBuilder.from(embed)
+                .setTitle('🚫 SORTEO CANCELADO 🚫')
+                .setColor('#FF0000')
+                .setDescription(embed.description + '\n\n**ESTE SORTEO HA SIDO CANCELADO POR UN ADMINISTRADOR.**')
+                .setFooter({ text: 'MonsterMania • Sorteo Cancelado' })
+                .setTimestamp();
+              
+              await sorteoMsg.edit({ embeds: [cancelledEmbed], components: [] }).catch(() => {});
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error al editar mensaje de sorteo cancelado:', err);
+      }
+
+      await message.reply(`✅ Sorteo de **${sorteo.premio}** (ID: \`${messageId}\`) ha sido cancelado exitosamente.`);
+      console.log(`[Sorteo] Sorteo ${messageId} cancelado por ${message.author.tag}`);
+    } catch (err) {
+      console.error('Error al cancelar sorteo:', err);
+      await message.reply('❌ Hubo un error al intentar cancelar el sorteo.');
+    }
+    return;
+  }
+
   // Comando !sorteo-ayuda (ayuda sobre sorteos)
   if (message.content.startsWith('!sorteo-ayuda') || message.content.startsWith('!sorteos-ayuda')) {
     const embed = new EmbedBuilder()
@@ -1344,6 +1443,12 @@ client.on('messageCreate', async (message) => {
           name: '📋 Ver Sorteos Activos',
           value: '`!sorteos-activos`\n' +
                  'Muestra todos los sorteos que están en curso\n' +
+                 '🔐 *Solo administradores*'
+        },
+        {
+          name: '🔄 Reiniciar Invitaciones',
+          value: '`!reset-invites`\n' +
+                 'Borra toda la base de datos de invitaciones y reinicia a 0\n' +
                  '🔐 *Solo administradores*'
         },
         {
